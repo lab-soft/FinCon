@@ -2,10 +2,10 @@
 import { firebaseConfig, configured } from './firebase-config.js';
 import {
   MESES, MESES_LONGOS, INDEFINIDO, RATEIO, CODIGOS_PADRAO, CODIGOS_EXTRA, moeda, r2, aprender, classificar,
-  novosLancamentos, gerarMes, conferir, aJustificar, saldoConta, movimentoConta,
+  novosLancamentos, gerarMes, conferir, aJustificar, saldoConta, movimentoConta, num,
 } from './logic.js';
 import * as P from './parsers.js';
-import { RELATORIOS } from './reports.js';
+import { RELATORIOS, quadrimestral } from './reports.js';
 import { importarSecretaria } from './importer.js';
 
 const DEMO = new URLSearchParams(location.search).has('demo') || !configured;
@@ -64,7 +64,7 @@ const todosCodigos = () => [...new Set([...Object.values(tabela()).flatMap(Objec
 // ------------------------------------------------------------------ navegação
 const NAV = {
   secretaria: [['inicio', 'Início'], ['extratos', 'Extratos'], ['vales', 'Vales'], ['bancos', 'Bancos'],
-    ['justificar', 'Justificar'], ['relatorios', 'Relatórios'], ['config', 'Configuração'], ['conta', 'Conta']],
+    ['justificar', 'Justificar'], ['relatorios', 'Relatórios'], ['membros', 'Membros'], ['config', 'Configuração'], ['conta', 'Conta']],
   residente: [['inicio', 'Início'], ['extratos', 'Meus extratos'], ['meusvales', 'Meus vales'], ['conta', 'Conta']],
   cr: [['inicio', 'Início'], ['relatorios', 'Relatórios'], ['conta', 'Conta']],
 };
@@ -112,36 +112,103 @@ VIEWS.inicio = async () => {
   if (CONSOLIDADO()) return inicioConsolidado();
   let html = '';
   if (sessao.perfil !== 'cr') {
-  const lanc = await dados('lancamentos');
-  const pessoas = pessoasVisiveis();
-  html += `<section class="card"><h2>Situação de ${st.ano}</h2>
-    <p class="pequeno">Lançamentos de extrato por mês (em vermelho, quantos ainda estão sem classificação "???").</p>
-    <div class="rolagem"><table class="grade"><thead><tr><th>Pessoa</th>${MESES.map((m) => `<th>${m}</th>`).join('')}</tr></thead><tbody>`;
-  for (const p of pessoas) {
-    html += `<tr><th>${esc(p.sigla)}</th>`;
-    for (let m = 1; m <= 12; m++) {
-      const ls = lanc.filter((l) => l.sigla === p.sigla && l.mes === m);
-      const pend = ls.filter((l) => !l.tipo || l.tipo === INDEFINIDO).length;
-      html += `<td>${ls.length ? ls.length : '<span class="vazio">—</span>'}${pend ? ` <span class="pend">${pend}</span>` : ''}</td>`;
+    const c = await contexto();
+    const pessoas = pessoasVisiveis();
+    html += `<section class="card"><h2>Situação de ${st.ano}</h2>
+      <p class="pequeno">Lançamentos de extrato por mês (em vermelho, quantos ainda estão sem classificação "???").</p>
+      <div class="rolagem"><table class="grade"><thead><tr><th>Pessoa</th>${MESES.map((m) => `<th>${m}</th>`).join('')}</tr></thead><tbody>`;
+    for (const p of pessoas) {
+      html += `<tr><th>${esc(p.sigla)}</th>`;
+      for (let m = 1; m <= 12; m++) {
+        const ls = c.lanc.filter((l) => l.sigla === p.sigla && l.mes === m);
+        const pend = ls.filter((l) => !l.tipo || l.tipo === INDEFINIDO).length;
+        html += `<td>${ls.length ? ls.length : '<span class="vazio">—</span>'}${pend ? ` <span class="pend">${pend}</span>` : ''}</td>`;
+      }
+      html += '</tr>';
     }
-    html += '</tr>';
-  }
-  html += '</tbody></table></div></section>';
+    html += '</tbody></table></div></section>';
+    html += cartaoPendentes(c);
   }
   if (VE_RELATORIOS()) {
-    const [vales, bancos, just, meses] = await Promise.all([dados('vales'), dados('bancos'), dados('justificar'), dados('meses')]);
-    const snaps = Object.fromEntries(meses.filter((m) => m.fechado).map((m) => [m.mes, m]));
+    const c = await contexto();
+    const conf = {};
     html += `<section class="card"><h2>Conferência (diferença da aba 2, célula N1)</h2><div class="rolagem"><table class="grade"><thead><tr><th></th>${MESES.map((m) => `<th>${m}</th>`).join('')}</tr></thead><tbody><tr><th>Diferença</th>`;
     for (let m = 1; m <= 12; m++) {
-      if (!vales.some((v) => v.mes === m)) { html += '<td><span class="vazio">—</span></td>'; continue; }
-      const c = conferir({ ano: st.ano, mes: m, vales, bancos, justificar: just, contas: cfg.contas, saldoInicial: cfg.saldoInicial?.[st.ano] || {}, snapshots: snaps });
-      html += `<td class="${Math.abs(c.diferenca) < 0.01 ? 'ok' : 'erro'}">${Math.abs(c.diferenca) < 0.01 ? '✓' : moeda(c.diferenca)}</td>`;
+      if (!c.vales.some((v) => v.mes === m)) { html += '<td><span class="vazio">—</span></td>'; continue; }
+      conf[m] = conferir({ ano: st.ano, mes: m, vales: c.vales, bancos: c.bancos, justificar: c.just, contas: cfg.contas, saldoInicial: cfg.saldoInicial?.[st.ano] || {}, snapshots: c.snaps });
+      html += `<td class="${Math.abs(conf[m].diferenca) < 0.01 ? 'ok' : 'erro'}">${Math.abs(conf[m].diferenca) < 0.01 ? '✓' : moeda(conf[m].diferenca)}</td>`;
     }
-    html += `</tr><tr><th>Fechado</th>${MESES.map((_, i) => `<td>${snaps[i + 1] ? '🔒' : ''}</td>`).join('')}</tr></tbody></table></div>
-      <p class="pequeno">✓ = saldo final dos caixas B e C igual a caixa + bancos + a justificar (como as abas 9 e 11).</p></section>`;
+    html += `</tr><tr><th>Encerrado</th>${MESES.map((_, i) => `<td>${c.snaps[i + 1] ? '🔒' : ''}</td>`).join('')}</tr></tbody></table></div>
+      <p class="pequeno">✓ = saldo final dos caixas B e C igual a caixa + bancos + a justificar (como as abas 9 e 11).</p>
+      ${detalheDiferencas(conf, c)}</section>`;
   }
   main().innerHTML = html;
 };
+
+/** Meses com diferença: de onde ela vem (caixa B/C) e quais contas não batem com o saldo do extrato. */
+function detalheDiferencas(conf, c) {
+  const linhas = [];
+  for (const [m, x] of Object.entries(conf)) {
+    for (const cx of ['B', 'C']) {
+      const d = x[cx];
+      if (Math.abs(d.diferenca) >= 0.01) linhas.push(`<tr><td>${MESES[m - 1]}</td><td>${cx}</td><td class="num">${moeda(d.final)}</td><td class="num">${moeda(d.dinheiro)}</td>
+        <td class="num">${moeda(d.bancos)}</td><td class="num">${moeda(d.justificar)}</td><td class="num">${moeda(d.total)}</td><td class="num erro">${moeda(d.diferenca)}</td></tr>`);
+    }
+  }
+  const contas = [];
+  if (SEC()) {
+    for (const s of c.saldos) {
+      if (s.final == null) continue;
+      const ct = cfg.contas.find((k) => k.id === s.conta);
+      if (!ct || ct.cartao || !c.bancos.some((b) => b.conta === s.conta && b.mes <= s.mes)) continue;
+      const calc = saldoConta(c.bancos, s.conta, st.ano, s.mes);
+      const dif = r2(calc - s.final);
+      if (Math.abs(dif) >= 0.01) contas.push(`<tr><td>${MESES[s.mes - 1]}</td><td>${esc(s.conta)}</td><td class="num">${moeda(calc)}</td><td class="num">${moeda(s.final)}</td><td class="num erro">${moeda(dif)}</td></tr>`);
+    }
+  }
+  if (!linhas.length && !contas.length) return '';
+  return `${linhas.length ? `<h3>Diferenças por caixa</h3><div class="rolagem"><table class="lanc"><thead><tr><th>Mês</th><th>Caixa</th><th>Saldo final</th><th>Dinheiro</th><th>Bancos</th><th>A justificar</th><th>Caixa + bancos + a justificar</th><th>Diferença</th></tr></thead><tbody>${linhas.join('')}</tbody></table></div>` : ''}
+    ${contas.length ? `<h3>Contas com saldo diferente do extrato</h3><div class="rolagem"><table class="lanc"><thead><tr><th>Mês</th><th>Conta</th><th>Saldo calculado (BANCOS)</th><th>Saldo do extrato</th><th>Diferença</th></tr></thead><tbody>${contas.join('')}</tbody></table></div>` : ''}`;
+}
+
+/** Extratos pendentes: por conta, meses sem lançamentos e meses cujo saldo inicial não bate com o final anterior. */
+function cartaoPendentes(c) {
+  const hoje = new Date();
+  const limite = st.ano < hoje.getFullYear() ? 12 : st.ano === hoje.getFullYear() ? hoje.getMonth() : 0;
+  if (!limite) return '';
+  const contas = cfg.contas.filter((k) => SEC() || k.sigla === sessao.sigla);
+  if (!contas.length) return '';
+  const saldo = new Map(c.saldos.map((s) => [`${s.conta}|${s.mes}`, s]));
+  let pend = 0, parada = 0;
+  let h = `<section class="card"><h2>Extratos pendentes</h2><p class="pequeno">✗ = mês não contabilizado (sem lançamentos de extrato nem movimento em BANCOS); ○ = mês já encerrado sem movimento da conta; ⚠ = o saldo inicial do
+    extrato não bate com o final do mês anterior (faltam lançamentos). Até ${MESES_LONGOS[limite - 1]} de ${st.ano}.</p>
+    <div class="rolagem"><table class="grade"><thead><tr><th>Conta</th><th>Pessoa</th>${MESES.slice(0, limite).map((m) => `<th>${m}</th>`).join('')}</tr></thead><tbody>`;
+  // contabilizado = tem lançamentos de extrato, ou movimento na aba BANCOS (ex.: importado da planilha), ou mês encerrado
+  const movimento = (id, m) => c.bancos.some((b) => b.conta === id && b.mes === m && b.rotulo !== 'SALDO ANTERIOR' && (b.entrada || b.saida));
+  for (const k of contas) {
+    const meses = [...c.lanc.filter((l) => l.conta === k.id), ...c.bancos.filter((b) => b.conta === k.id)].map((x) => x.mes);
+    if (!meses.length && !k.sigla) continue; // conta sem dono e sem nenhum dado no ano
+    const inicio = meses.length ? Math.min(...meses) : 1;
+    const ate = cfg.pessoas.find((p) => p.sigla === k.sigla)?.ate || '';
+    const fim = !ate ? limite : Number(ate.slice(0, 4)) > st.ano ? limite : Number(ate.slice(0, 4)) < st.ano ? 0 : Math.min(limite, Number(ate.slice(5, 7)));
+    if (!fim) continue; // a pessoa já tinha saído
+    h += `<tr><th>${esc(k.id)}</th><td>${esc(k.sigla || '')}</td>`;
+    for (let m = 1; m <= limite; m++) {
+      if (m > fim) { h += '<td><span class="vazio">·</span></td>'; continue; }
+      const tem = c.lanc.some((l) => l.conta === k.id && l.mes === m) || movimento(k.id, m);
+      const ab = saldo.get(`${k.id}|${m}`)?.abertura, ant = saldo.get(`${k.id}|${m - 1}`)?.final;
+      const quebra = !k.cartao && ab != null && ant != null && Math.abs(ab - ant) >= 0.01;
+      if (m < inicio && !tem) { h += '<td><span class="vazio">·</span></td>'; continue; }
+      if (!tem && c.snaps[m]) { parada++; h += '<td class="pend" title="mês encerrado sem movimento desta conta">○</td>'; continue; }
+      if (!tem || quebra) pend++;
+      h += `<td class="${!tem || quebra ? 'erro' : 'ok'}" title="${quebra ? `saldo inicial ${moeda(ab)} ≠ final anterior ${moeda(ant)}` : ''}">${!tem ? '✗' : quebra ? '⚠' : '✓'}</td>`;
+    }
+    h += '</tr>';
+  }
+  return h + `</tbody></table></div><p class="pequeno">${pend ? `${pend} mês(es) pendente(s).` : 'Nenhuma pendência nos meses abertos.'}${parada ? ` ${parada} mês(es) encerrado(s) sem movimento da conta (○).` : ''}</p></section>`;
+}
+
+const mesEncerrado = (c, m) => c.snaps[m];
 
 // ------------------------------------------------------------------ extratos
 VIEWS.extratos = async () => {
@@ -349,41 +416,62 @@ async function sugerirTodos(sigla) {
 
 // ------------------------------------------------------------------ vales (secretaria)
 VIEWS.vales = async () => {
-  const [vales] = await Promise.all([dados('vales')]);
+  const c = await contexto();
   const mes = st.mes;
-  const doMes = vales.filter((v) => v.mes === mes).sort((a, b) => a.sigla.localeCompare(b.sigla) || a.caixa.localeCompare(b.caixa) || (a.es === b.es ? 0 : a.es === 'E' ? -1 : 1));
+  const enc = mesEncerrado(c, mes);
+  const doMes = c.vales.filter((v) => v.mes === mes).sort((a, b) => a.sigla.localeCompare(b.sigla) || a.caixa.localeCompare(b.caixa) || (a.es === b.es ? 0 : a.es === 'E' ? -1 : 1));
+  const conf = doMes.length ? conferir({ ano: st.ano, mes, vales: c.vales, bancos: c.bancos, justificar: c.just, contas: cfg.contas,
+    saldoInicial: cfg.saldoInicial?.[st.ano] || {}, snapshots: c.snaps }) : null;
   main().innerHTML = `
-  <section class="card"><h2>Vales — ${MESES_LONGOS[mes - 1]} de ${st.ano}</h2>
+  <section class="card"><h2>Vales — ${MESES_LONGOS[mes - 1]} de ${st.ano} ${enc ? '🔒' : ''}</h2>
     <div class="linha"><label>Mês ${seletorMes('va-mes', mes)}</label>
-      <button id="va-gerar">Gerar vales do mês a partir dos extratos</button>
+      <button id="va-gerar" ${enc ? 'disabled' : ''}>Gerar vales do mês a partir dos extratos</button>
       <button id="va-exportar" class="sec">Exportar planilha (VALES, JUSTIFICAR, BANCOS)</button></div>
+    <div class="linha encerrar">${enc
+      ? `<span>🔒 Mês encerrado${enc.em ? ` em ${new Date(enc.em).toLocaleDateString('pt-BR')}` : ''}${enc.por ? ` por ${esc(enc.por)}` : ''}. A justificar no encerramento: B ${moeda(enc.B)} · C ${moeda(r2((enc.Cax || 0) + (enc.C || 0)))}.</span>
+         <button id="va-reabrir" class="sec">Reabrir o mês</button>`
+      : `${conf ? `<span class="${Math.abs(conf.diferenca) < 0.01 ? 'ok' : 'erro'}">${Math.abs(conf.diferenca) < 0.01 ? 'Conferência: diferença zero.' : `Conferência: DIFERENÇA de ${moeda(conf.diferenca)} (B ${moeda(conf.B.diferenca)}, C ${moeda(conf.C.diferenca)}).`}</span>` : ''}
+         <button id="va-encerrar" ${doMes.length ? '' : 'disabled'}>Encerrar o mês</button>`}</div>
+    <p class="pequeno">Encerrar guarda o total a justificar do mês e trava vales, bancos e itens a justificar desse mês.</p>
     <div id="va-previa"></div></section>
-  <section class="card"><h2>Lançados em ${MESES_LONGOS[mes - 1]}</h2>${tabelaVales(doMes)}
-    <details><summary>Incluir vale manual</summary><div class="linha">
+  <section class="card"><h2>Lançados em ${MESES_LONGOS[mes - 1]}</h2>${tabelaVales(doMes, !enc)}
+    ${enc ? '' : `<details><summary>Incluir vale manual</summary><div class="linha">
       <select id="vm-pessoa">${opcoes(cfg.pessoas.map((p) => [p.sigla, p.sigla]))}</select>
       <select id="vm-caixa">${opcoes([['B', 'B'], ['C', 'C']])}</select><select id="vm-es">${opcoes([['S', 'S'], ['E', 'E']])}</select>
-      <input id="vm-valor" placeholder="Valor" size="8"><select id="vm-tipo">${opcoes(Object.values(tabela()).flatMap(Object.keys).map((c) => [c, c]))}</select>
-      <input id="vm-disc" placeholder="Discriminação"><button id="vm-ok">Incluir</button></div></details></section>`;
+      <input id="vm-valor" placeholder="Valor" size="8"><select id="vm-tipo">${opcoes(Object.values(tabela()).flatMap(Object.keys).map((x) => [x, x]))}</select>
+      <input id="vm-disc" placeholder="Discriminação"><button id="vm-ok">Incluir</button></div></details>`}</section>`;
   $('#va-mes').onchange = (e) => { st.mes = Number(e.target.value); rotear(); };
   $('#va-gerar').onclick = () => tentar(previaVales);
   $('#va-exportar').onclick = () => tentar(exportarPlanilha);
-  $('#vm-ok').onclick = () => tentar(async () => {
-    const valor = Number(String($('#vm-valor').value).replace('.', '').replace(',', '.'));
+  $('#va-encerrar') && ($('#va-encerrar').onclick = () => tentar(async () => {
+    if (conf && Math.abs(conf.diferenca) >= 0.01 && !confirm(`A conferência de ${MESES_LONGOS[mes - 1]} tem diferença de ${moeda(conf.diferenca)}. Encerrar mesmo assim?`)) return;
+    if (!confirm(`Encerrar ${MESES_LONGOS[mes - 1]} de ${st.ano}? Vales, bancos e itens a justificar do mês ficam travados.`)) return;
+    const j = aJustificar(c.just, st.ano, mes);
+    await api.salvar('meses', { id: `${st.lugar}_${st.ano}_${mes}`, ano: st.ano, mes, fechado: true, ...j, em: new Date().toISOString(), por: sessao.email });
+    invalidar('meses'); toast('Mês encerrado.'); rotear();
+  }));
+  $('#va-reabrir') && ($('#va-reabrir').onclick = () => tentar(async () => {
+    if (!confirm(`Reabrir ${MESES_LONGOS[mes - 1]}? O total a justificar volta a ser calculado e o mês pode ser alterado.`)) return;
+    await api.salvar('meses', { ...enc, fechado: false, reaberto: new Date().toISOString() });
+    invalidar('meses'); toast('Mês reaberto.'); rotear();
+  }));
+  $('#vm-ok') && ($('#vm-ok').onclick = () => tentar(async () => {
+    const valor = Number(String($('#vm-valor').value).replace(/\./g, '').replace(',', '.'));
     if (!valor) throw new Error('Valor inválido.');
     await api.salvar('vales', { ano: st.ano, mes, dia: 1, sigla: $('#vm-pessoa').value, caixa: $('#vm-caixa').value, es: $('#vm-es').value,
       valor: r2(valor), tipo: $('#vm-tipo').value, disc: $('#vm-disc').value, origem: 'manual' });
     invalidar('vales'); rotear();
-  });
+  }));
   main().onclick = (e) => {
     const id = e.target.dataset.delvale;
-    if (id && confirm('Apagar este vale?')) tentar(async () => { await api.apagarVarios('vales', [id]); invalidar('vales'); rotear(); });
+    if (id && !enc && confirm('Apagar este vale?')) tentar(async () => { await api.apagarVarios('vales', [id]); invalidar('vales'); rotear(); });
   };
 };
 
-function tabelaVales(lst) {
+function tabelaVales(lst, editavel = true) {
   if (!lst.length) return '<p class="pequeno">Nenhum vale neste mês.</p>';
   let h = '<div class="rolagem"><table class="lanc"><thead><tr><th>Pessoa</th><th>Caixa</th><th>E/S</th><th>Valor</th><th>Tipo1</th><th>Discriminação</th><th>Origem</th><th></th></tr></thead><tbody>';
-  for (const v of lst) h += `<tr><td>${esc(v.sigla)}</td><td>${v.caixa}</td><td>${v.es}</td><td class="num">${moeda(v.valor)}</td><td>${esc(v.tipo)}</td><td>${esc(v.disc)}</td><td class="pequeno">${esc(v.origem || '')}</td><td>${v.id ? `<button class="mini perigo" data-delvale="${esc(v.id)}">✕</button>` : ''}</td></tr>`;
+  for (const v of lst) h += `<tr><td>${esc(v.sigla)}</td><td>${v.caixa}</td><td>${v.es}</td><td class="num">${moeda(v.valor)}</td><td>${esc(v.tipo)}</td><td>${esc(v.disc)}</td><td class="pequeno">${esc(v.origem || '')}</td><td>${v.id && editavel ? `<button class="mini perigo" data-delvale="${esc(v.id)}">✕</button>` : ''}</td></tr>`;
   const e = lst.filter((v) => v.es === 'E').reduce((s, v) => s + v.valor, 0), s = lst.filter((v) => v.es === 'S').reduce((s2, v) => s2 + v.valor, 0);
   return h + `</tbody></table></div><p class="pequeno">Entradas ${moeda(e)} · saídas ${moeda(s)}</p>`;
 }
@@ -404,6 +492,7 @@ function saldoPlanilhaFn(bancos) {
 async function previaVales() {
   const mes = st.mes;
   const c = await contexto();
+  if (mesEncerrado(c, mes)) throw new Error('Mês encerrado: reabra-o para gerar de novo.');
   const lancadas = new Set(c.vales.filter((v) => v.mes === mes && v.origem === 'importado').map((v) => v.sigla));
   const outrosVales = c.vales.filter((v) => !(v.mes === mes && ['gerado', 'rateio'].includes(v.origem)));
   const outrosBancos = c.bancos.filter((b) => !(b.mes === mes && b.origem === 'gerado'));
@@ -486,10 +575,11 @@ VIEWS.bancos = async () => {
   $('#ba-mes').onchange = (e) => { st.mes = Number(e.target.value); rotear(); };
   const n = (v) => Number(String(v || '0').replace(/\./g, '').replace(',', '.')) || 0;
   $('#bm-ok').onclick = () => tentar(async () => {
+    if (mesEncerrado(c, st.mes)) throw new Error('Mês encerrado: reabra-o em Vales para alterar.');
     await api.salvar('bancos', { ano: st.ano, mes: st.mes, conta: $('#bm-conta').value, rotulo: $('#bm-rot').value, entrada: n($('#bm-e').value), saida: n($('#bm-s').value), origem: 'manual' });
     invalidar('bancos'); rotear();
   });
-  main().onclick = (e) => { const id = e.target.dataset.delb; if (id && confirm('Apagar este movimento?')) tentar(async () => { await api.apagarVarios('bancos', [id]); invalidar('bancos'); rotear(); }); };
+  main().onclick = (e) => { const id = e.target.dataset.delb; if (id && mesEncerrado(c, st.mes)) { toast('Mês encerrado: reabra-o em Vales para alterar.', true); return; } if (id && confirm('Apagar este movimento?')) tentar(async () => { await api.apagarVarios('bancos', [id]); invalidar('bancos'); rotear(); }); };
 };
 
 // ------------------------------------------------------------------ justificar
@@ -497,40 +587,43 @@ VIEWS.justificar = async () => {
   const c = await contexto();
   const j = aJustificar(c.just, st.ano, 12);
   const lst = [...c.just].sort((a, b) => String(a.data || '').localeCompare(String(b.data || '')));
+  const travado = (x) => Boolean(x.mes && x.ano === st.ano && mesEncerrado(c, x.mes));
   let h = `<section class="card"><h2>A justificar</h2>
     <p>Total Caixa B: <strong>${moeda(j.B)}</strong> · Caixa C com a administração (AX): <strong>${moeda(j.Cax)}</strong> · Caixa C a justificar: <strong>${moeda(j.C)}</strong></p>
-    <p class="pequeno">Valor positivo = saída a justificar; negativo = entrada (reduz o que falta justificar).</p>
-    <div class="rolagem"><table class="lanc"><thead><tr><th>Caixa</th><th>Valor</th><th>Discriminação</th><th>Nome</th><th>Mês</th><th></th></tr></thead><tbody>
-    ${lst.map((x) => `<tr><td>${x.caixa}</td><td class="num">${moeda(x.valor)}</td><td>${esc(x.disc)}</td><td>${esc(x.sigla)}</td><td>${x.mes ? MESES[x.mes - 1] + '/' + (x.ano || '') : ''}</td><td><button class="mini perigo" data-delj="${esc(x.id)}">✕</button></td></tr>`).join('')}
+    <p class="pequeno">Valor positivo = saída a justificar; negativo = entrada (reduz o que falta justificar). Itens de meses encerrados (🔒) não podem ser excluídos.</p>
+    <div class="linha"><button id="jt-excluir" class="perigo" disabled>Excluir selecionados</button><span id="jt-soma" class="pequeno"></span></div>
+    <div class="rolagem"><table class="lanc"><thead><tr><th><input type="checkbox" id="jt-todos" title="Marcar todos"></th><th>Caixa</th><th>Valor</th><th>Discriminação</th><th>Nome</th><th>Mês</th></tr></thead><tbody id="jt-lista">
+    ${lst.map((x) => `<tr><td>${travado(x) ? '🔒' : `<input type="checkbox" data-sel="${esc(x.id)}" data-valor="${x.valor}">`}</td><td>${x.caixa}</td><td class="num">${moeda(x.valor)}</td><td>${esc(x.disc)}</td><td>${esc(x.sigla)}</td><td>${x.mes ? MESES[x.mes - 1] + '/' + (x.ano || '') : ''}</td></tr>`).join('')}
     </tbody></table></div>
     <details><summary>Incluir item</summary><div class="linha"><select id="jm-caixa">${opcoes([['B', 'B'], ['C', 'C']])}</select>
       <input id="jm-valor" placeholder="Valor (+ saída / − entrada)" size="12"><input id="jm-disc" placeholder="Discriminação">
       <select id="jm-pessoa">${opcoes([...cfg.pessoas.map((p) => [p.sigla, p.sigla]), ['AX', 'AX (administração)']])}</select>${seletorMes('jm-mes', st.mes)}<button id="jm-ok">Incluir</button></div></details></section>
-    <section class="card"><h2>Fechamento dos meses</h2><p class="pequeno">Fechar o mês guarda o total a justificar daquele mês (como trocar a fórmula pelo valor na aba 3).</p><div class="linha">`;
-  for (let m = 1; m <= 12; m++) {
-    const f = c.snaps[m];
-    h += `<button class="${f ? 'sec' : ''}" data-fechar="${m}" title="${f ? `B ${moeda(f.B)} · C ${moeda(f.C)}` : 'aberto'}">${MESES[m - 1]} ${f ? '🔒' : ''}</button>`;
-  }
-  main().innerHTML = h + '</div></section>';
+    <section class="card"><h2>Meses encerrados</h2><p class="pequeno">O encerramento é feito em Vales (guarda o total a justificar do mês e trava o mês).</p><div class="linha">
+    ${MESES.map((m, i) => `<span class="selo ${c.snaps[i + 1] ? 'ok' : 'vazio'}" title="${c.snaps[i + 1] ? `B ${moeda(c.snaps[i + 1].B)} · C ${moeda(c.snaps[i + 1].C)}` : 'aberto'}">${m} ${c.snaps[i + 1] ? '🔒' : ''}</span>`).join('')}</div></section>`;
+  main().innerHTML = h;
+  const selecionados = () => $$('#jt-lista [data-sel]:checked');
+  const atualizar = () => {
+    const s = selecionados();
+    $('#jt-excluir').disabled = !s.length;
+    $('#jt-excluir').textContent = s.length ? `Excluir ${s.length} selecionado(s)` : 'Excluir selecionados';
+    $('#jt-soma').textContent = s.length ? `Soma: ${moeda(r2(s.reduce((a, x) => a + Number(x.dataset.valor), 0)))}` : '';
+  };
+  $('#jt-todos').onchange = (e) => { $$('#jt-lista [data-sel]').forEach((x) => { x.checked = e.target.checked; }); atualizar(); };
+  $('#jt-lista').onchange = atualizar;
+  $('#jt-excluir').onclick = () => tentar(async () => {
+    const ids = selecionados().map((x) => x.dataset.sel);
+    if (!ids.length || !confirm(`Excluir ${ids.length} item(ns) a justificar?`)) return;
+    await api.apagarVarios('justificar', ids); invalidar('justificar'); toast(`${ids.length} item(ns) excluído(s).`); rotear();
+  });
   $('#jm-ok').onclick = () => tentar(async () => {
     const valor = Number(String($('#jm-valor').value).replace(/\./g, '').replace(',', '.'));
     if (!valor) throw new Error('Valor inválido.');
     const mes = Number($('#jm-mes').value);
+    if (mesEncerrado(c, mes)) throw new Error('Mês encerrado: reabra-o em Vales para incluir itens.');
     await api.salvar('justificar', { ano: st.ano, mes, caixa: $('#jm-caixa').value, valor: r2(valor), disc: $('#jm-disc').value, sigla: $('#jm-pessoa').value,
       data: `${st.ano}-${String(mes).padStart(2, '0')}-01`, origem: 'manual' });
     invalidar('justificar'); rotear();
   });
-  main().onclick = (e) => {
-    const id = e.target.dataset.delj;
-    if (id && confirm('Apagar este item?')) tentar(async () => { await api.apagarVarios('justificar', [id]); invalidar('justificar'); rotear(); });
-    const m = Number(e.target.dataset.fechar);
-    if (m) tentar(async () => {
-      const f = c.snaps[m];
-      if (f) { if (confirm(`Reabrir ${MESES_LONGOS[m - 1]}? O total passa a ser recalculado.`)) await api.salvar('meses', { ...f, fechado: false }); }
-      else { const t = aJustificar(c.just, st.ano, m); await api.salvar('meses', { id: `${st.lugar}_${st.ano}_${m}`, ano: st.ano, mes: m, fechado: true, ...t }); }
-      invalidar('meses'); rotear();
-    });
-  };
 };
 
 // ------------------------------------------------------------------ relatórios
@@ -543,24 +636,93 @@ VIEWS.relatorios = async () => {
   const rel = lista.find((r) => r.id === (st.rel || '8')) || lista[0];
   st.rel = rel.id;
   const pessoaSel = st.relPessoa || cfg.pessoas[0]?.sigla || '';
+  const q = st.quad || Math.min(3, Math.ceil(st.mes / 4));
+  const padrao = ['8', '9', '10', '11'];
   main().innerHTML = `<section class="card nao-imprime"><h2>Relatórios</h2><div class="linha">
     <label>Relatório <select id="re-rel">${opcoes(lista.map((r) => [r.id, `${r.id} — ${r.nome}`]), rel.id)}</select></label>
     ${cons ? `<span class="pequeno">Consolidado de ${cons.n} lugares (folhas pessoais e vale eletrônico: escolha um lugar).</span>` : ''}
     <label>Mês ${seletorMes('re-mes', st.mes)}</label>
     ${rel.caixa ? `<label>Caixa <select id="re-caixa">${opcoes([['B', 'B'], ['C', 'C']], st.relCaixa || 'B')}</select></label>` : ''}
     ${rel.pessoa ? `<label>Pessoa <select id="re-pessoa">${rel.pessoa === 'opcional' ? '<option value="">todas</option>' : ''}${opcoes(cfg.pessoas.map((p) => [p.sigla, p.sigla]), rel.pessoa === 'opcional' ? (st.relPessoa || '') : pessoaSel)}</select></label>` : ''}
-    <button onclick="window.print()">Imprimir</button></div></section>
+    <button onclick="window.print()">Imprimir</button></div>
+    <details><summary>Exportar para xlsx</summary><p class="pequeno">Abas da planilha (mês escolhido acima):</p><div class="linha">
+      ${lista.map((r) => `<label><input type="checkbox" data-exp="${r.id}" ${padrao.includes(r.id) ? 'checked' : ''}> ${r.id} — ${esc(r.nome)}</label>`).join('')}</div>
+      <button id="re-exportar">Exportar xlsx</button></details>
+    <details ${st.quadAberto ? 'open' : ''}><summary>Relatório quadrimestral</summary><div class="linha">
+      <label>Quadrimestre <select id="re-quad">${opcoes([[1, '1º — janeiro a abril'], [2, '2º — maio a agosto'], [3, '3º — setembro a dezembro']], q)}</select></label>
+      <button id="re-quad-ver" class="sec">Ver</button><button id="re-quad-exp">Exportar xlsx</button></div>
+      <p class="pequeno">Caixas B e C: receitas e despesas por conceito em cada mês e no quadrimestre (com o orçado), evolução mensal e
+        comprovante do saldo no fim do quadrimestre${cons ? ', somando todos os lugares' : ''}.</p></details></section>
     <section class="card relatorio" id="re-saida"></section>`;
+  const base = () => ({ cfg: cfgR, vales: c.vales, bancos: c.bancos, justificar: c.just, ano: st.ano, mes: st.mes, snapshots: c.snaps });
   const desenhar = () => {
-    $('#re-saida').innerHTML = rel.fn({ cfg: cfgR, vales: c.vales, bancos: c.bancos, justificar: c.just, ano: st.ano, mes: st.mes,
-      caixa: st.relCaixa || 'B', sigla: rel.pessoa === 'opcional' ? (st.relPessoa || '') : pessoaSel, snapshots: c.snaps });
+    $('#re-saida').innerHTML = rel.fn({ ...base(), caixa: st.relCaixa || 'B', sigla: rel.pessoa === 'opcional' ? (st.relPessoa || '') : pessoaSel });
   };
   $('#re-rel').onchange = (e) => { st.rel = e.target.value; rotear(); };
   $('#re-mes').onchange = (e) => { st.mes = Number(e.target.value); desenhar(); };
   $('#re-caixa') && ($('#re-caixa').onchange = (e) => { st.relCaixa = e.target.value; desenhar(); });
   $('#re-pessoa') && ($('#re-pessoa').onchange = (e) => { st.relPessoa = e.target.value; rotear(); });
+  $('#re-quad').onchange = (e) => { st.quad = Number(e.target.value); };
+  $('#re-quad-ver').onclick = () => { st.quadAberto = true; $('#re-saida').innerHTML = quadrimestral({ ...base(), q: Number($('#re-quad').value) }); };
+  $('#re-quad-exp').onclick = () => tentar(async () => {
+    const qq = Number($('#re-quad').value);
+    await exportarAbas([[`Quadrimestre ${qq}`, quadrimestral({ ...base(), q: qq })]], `quadrimestre-${qq}`);
+  });
+  $('#re-exportar').onclick = () => tentar(async () => {
+    const ids = $$('[data-exp]:checked').map((x) => x.dataset.exp);
+    if (!ids.length) throw new Error('Marque ao menos um relatório.');
+    const abas = [];
+    for (const id of ids) {
+      const r = RELATORIOS.find((x) => x.id === id);
+      if (r.caixa) for (const cx of ['B', 'C']) abas.push([`${id} ${r.nome} ${cx}`, r.fn({ ...base(), caixa: cx })]);
+      else if (r.pessoa === 'obrigatória') {
+        const comVale = cfg.pessoas.filter((p) => c.vales.some((v) => v.mes === st.mes && v.sigla === p.sigla));
+        for (const p of comVale) abas.push([`${id} Vale ${p.sigla}`, r.fn({ ...base(), sigla: p.sigla })]);
+      } else abas.push([`${id} ${r.nome}`, r.fn({ ...base(), sigla: '' })]);
+    }
+    await exportarAbas(abas, MESES[st.mes - 1].toLowerCase());
+  });
   desenhar();
 };
+
+/** Converte relatórios em HTML (cabeçalho + tabelas) em abas de uma planilha xlsx e baixa o arquivo. */
+async function exportarAbas(abas, sufixo) {
+  const XLSX = await xlsx();
+  const wb = XLSX.utils.book_new();
+  const usados = new Set();
+  for (const [nome, html] of abas) {
+    const linhas = htmlParaLinhas(html);
+    const ws = XLSX.utils.aoa_to_sheet(linhas);
+    const larg = [];
+    for (const l of linhas) l.forEach((v, i) => { larg[i] = Math.max(larg[i] || 8, Math.min(60, String(v ?? '').length + 2)); });
+    ws['!cols'] = larg.map((w) => ({ wch: w }));
+    let n = nome.replace(/[:\\/?*[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 31);
+    for (let k = 2; usados.has(n); k++) n = `${n.slice(0, 28)} ${k}`;
+    usados.add(n);
+    XLSX.utils.book_append_sheet(wb, ws, n);
+  }
+  XLSX.writeFile(wb, `FinCon-${CONSOLIDADO() ? 'consolidado' : slug(cfg.casa || nomeLugar(st.lugar) || 'ccbv')}-${st.ano}-${sufixo}.xlsx`);
+}
+
+function htmlParaLinhas(html) {
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  const linhas = [];
+  const valor = (s) => {
+    const t = s.trim();
+    return /^[−-]?[\d.]+,\d{2}$/.test(t) ? num(t.replace('−', '-')) : t;
+  };
+  for (const el of div.children) {
+    if (el.tagName === 'TABLE') {
+      for (const tr of el.querySelectorAll('tr')) linhas.push([...tr.children].map((c) => valor(c.textContent)));
+      linhas.push([]);
+    } else if (el.textContent.trim()) {
+      linhas.push(el.classList.contains('rel-cab') ? [...el.children].map((x) => x.textContent.trim()) : [el.textContent.trim()]);
+      if (el.tagName !== 'H3') linhas.push([]);
+    }
+  }
+  return linhas;
+}
 
 // ------------------------------------------------------------------ meus vales (residente)
 VIEWS.meusvales = async () => {
@@ -573,18 +735,11 @@ VIEWS.meusvales = async () => {
 // ------------------------------------------------------------------ configuração (secretaria)
 VIEWS.config = async () => {
   const si = cfg.saldoInicial?.[st.ano] || { B: 0, C: 0 };
-  const usuarios = await api.auth.listarUsuarios();
   main().innerHTML = `
   <section class="card"><h2>Planilha da secretaria</h2>
     <p class="pequeno">Importa de uma "Secretaria Evolution.ANO.xlsx" as pessoas, os códigos (aba 1), o saldo inicial, os VALES já lançados (aba 2),
       JUSTIFICAR e fechamentos (aba 3), BANCOS (aba 4) e o orçamento (aba 6). Os dados desse ano no app são substituídos.</p>
     <input type="file" id="cf-sec" accept=".xlsx"><div id="cf-sec-status" class="pequeno"></div></section>
-  <section class="card"><h2>Pessoas</h2><p class="pequeno">Moradores dividem o Caixa C (rateio PS/CO). "Até" = último mês (AAAA-MM) de quem saiu.</p>
-    <table class="lanc"><thead><tr><th>Sigla</th><th>Nome</th><th>Morador</th><th>Desde</th><th>Até</th><th></th></tr></thead><tbody id="cf-pessoas">
-    ${cfg.pessoas.map((p, i) => `<tr data-i="${i}"><td><input data-f="sigla" value="${esc(p.sigla)}" size="4"></td><td><input data-f="nome" value="${esc(p.nome)}"></td>
-      <td><input type="checkbox" data-f="morador" ${p.morador ? 'checked' : ''}></td><td><input data-f="desde" value="${esc(p.desde || '')}" size="7" placeholder="AAAA-MM"></td>
-      <td><input data-f="ate" value="${esc(p.ate || '')}" size="7" placeholder="AAAA-MM"></td><td><button class="mini perigo" data-delp="${i}">✕</button></td></tr>`).join('')}
-    </tbody></table><button id="cf-add-p" class="sec">+ pessoa</button></section>
   <section class="card"><h2>Contas</h2><table class="lanc"><thead><tr><th>Sigla</th><th>Pessoa</th><th>Nome</th><th>Caixa</th><th>Cartão</th><th></th></tr></thead><tbody id="cf-contas">
     ${cfg.contas.map((c, i) => `<tr data-i="${i}"><td><input data-f="id" value="${esc(c.id)}" size="6"></td><td><input data-f="sigla" value="${esc(c.sigla || '')}" size="4"></td>
       <td><input data-f="nome" value="${esc(c.nome || '')}"></td><td><select data-f="caixa">${opcoes([['B', 'B'], ['C', 'C']], c.caixa || 'B')}</select></td>
@@ -592,67 +747,25 @@ VIEWS.config = async () => {
     </tbody></table><button id="cf-add-c" class="sec">+ conta</button></section>
   <section class="card"><h2>Saldo inicial de ${st.ano}</h2><div class="linha">
     <label>Caixa B <input id="cf-sib" value="${si.B ?? 0}" size="12"></label><label>Caixa C <input id="cf-sic" value="${si.C ?? 0}" size="12"></label>
-    <label>Nome da casa <input id="cf-casa" value="${esc(cfg.casa || 'CCBV')}" size="8"></label></div>
-    <button id="cf-salvar">Salvar configuração</button></section>
-  <section class="card"><h2>Usuários</h2><datalist id="siglas">${cfg.pessoas.map((p) => `<option value="${esc(p.sigla)}">${esc(p.nome)}</option>`).join('')}</datalist>
-    <p class="pequeno">Perfis: <strong>cl</strong> = acesso total (secretaria); <strong>residente</strong> = envia e classifica os
-      próprios extratos (precisa de sigla); <strong>cr</strong> = só vê relatórios e a conferência, sem alterar nada (sigla opcional).</p>
-    <table class="lanc"><thead><tr><th>E-mail</th><th>Sigla</th><th>Perfil</th><th></th></tr></thead><tbody id="us-lista">
-    ${usuarios.filter((u) => u.lugar === st.lugar).map((u) => `<tr data-uid="${esc(u.uid)}"><td>${esc(u.email)}</td><td><input data-u="sigla" value="${esc(u.sigla || '')}" size="5" list="siglas"></td>
-      <td><select data-u="perfil">${opcoes(PERFIS, u.perfil)}</select></td>
-      <td><button class="mini" data-salvaru="${esc(u.uid)}">Salvar</button> <button class="mini sec" data-convite="${esc(u.uid)}">Convite</button></td></tr>`).join('')}</tbody></table>
-    <div id="us-convite"></div>
-    <details><summary>Criar login</summary><div class="linha"><input id="us-email" placeholder="e-mail"><input id="us-senha" placeholder="senha provisória (opcional)">
-      <input id="us-sigla" placeholder="sigla (residente)" size="10" list="siglas"><select id="us-perfil">${opcoes(PERFIS, 'residente')}</select>
-      <button id="us-ok">Criar</button></div><p class="pequeno">Sem senha provisória, o Firebase envia à pessoa um e-mail para ela
-      definir a própria senha. Com senha provisória, ela troca a senha no primeiro acesso. Em seguida aparece a mensagem de convite.</p></details></section>
+    <label>Nome da casa <input id="cf-casa" value="${esc(cfg.casa || 'CCBV')}" size="14"></label></div>
+    <button id="cf-salvar">Salvar configuração</button><p class="pequeno">Pessoas e logins ficam em <a href="#/membros">Membros</a>.</p></section>
   <section class="card"><h2>Cópia de segurança</h2><div class="linha"><button id="cf-backup" class="sec">Baixar cópia (JSON)</button>
     <label>Restaurar <input type="file" id="cf-restaurar" accept=".json"></label>${api.demo ? '<button id="cf-zerar" class="perigo">Apagar dados da demonstração</button>' : ''}</div></section>`;
   const lerTab = (sel, lst) => $$(`${sel} tr`).forEach((tr) => {
     const o = lst[Number(tr.dataset.i)];
     $$('[data-f]', tr).forEach((inp) => { o[inp.dataset.f] = inp.type === 'checkbox' ? inp.checked : inp.value.trim(); });
   });
-  const salvar = async () => {
-    lerTab('#cf-pessoas', cfg.pessoas); lerTab('#cf-contas', cfg.contas);
+  $('#cf-salvar').onclick = () => tentar(async () => {
+    lerTab('#cf-contas', cfg.contas);
     const n = (v) => Number(String(v).replace(/\./g, '').replace(',', '.')) || 0;
     (cfg.saldoInicial ||= {})[st.ano] = { B: n($('#cf-sib').value), C: n($('#cf-sic').value) };
     cfg.casa = $('#cf-casa').value.trim() || 'CCBV';
     await api.salvarConfig(cfg); toast('Configuração salva.');
-  };
-  $('#cf-salvar').onclick = () => tentar(salvar);
-  $('#cf-add-p').onclick = () => tentar(async () => { lerTab('#cf-pessoas', cfg.pessoas); cfg.pessoas.push({ sigla: '', nome: '', morador: true }); await api.salvarConfig(cfg); rotear(); });
+  });
   $('#cf-add-c').onclick = () => tentar(async () => { lerTab('#cf-contas', cfg.contas); cfg.contas.push({ id: '', sigla: '', nome: '', caixa: 'B' }); await api.salvarConfig(cfg); rotear(); });
   main().onclick = (e) => {
-    if (e.target.dataset.delp) tentar(async () => { cfg.pessoas.splice(Number(e.target.dataset.delp), 1); await api.salvarConfig(cfg); rotear(); });
     if (e.target.dataset.delc) tentar(async () => { cfg.contas.splice(Number(e.target.dataset.delc), 1); await api.salvarConfig(cfg); rotear(); });
-    const cv = e.target.dataset.convite;
-    if (cv) tentar(async () => {
-      const tr = e.target.closest('tr');
-      const u = { email: tr.cells[0].textContent, sigla: $('[data-u=sigla]', tr).value.trim().toUpperCase(), perfil: $('[data-u=perfil]', tr).value };
-      const enviar = confirm(`Enviar também o e-mail do Firebase para ${u.email} definir (ou redefinir) a senha?\n(OK = enviar; Cancelar = só mostrar a mensagem de convite)`);
-      if (enviar) await api.auth.enviarDefinicaoSenha(u.email);
-      mostrarConvite({ ...u, comSenha: false, enviado: enviar && !api.demo });
-    });
-    const uid = e.target.dataset.salvaru;
-    if (uid) tentar(async () => {
-      const tr = e.target.closest('tr');
-      const sigla = $('[data-u=sigla]', tr).value.trim().toUpperCase();
-      const perfil = $('[data-u=perfil]', tr).value;
-      if (!sigla && perfil === 'residente') throw new Error('Residente precisa de sigla.');
-      if (uid === sessao.uid && perfil !== 'secretaria' && !confirm('Você está tirando o seu próprio acesso total (cl). Continuar?')) return;
-      await api.auth.salvarUsuario(uid, { sigla, perfil });
-      toast('Usuário atualizado.');
-    });
   };
-  $('#us-ok').onclick = () => tentar(async () => {
-    const sigla = $('#us-sigla').value.trim().toUpperCase();
-    const email = $('#us-email').value.trim(), senha = $('#us-senha').value, perfil = $('#us-perfil').value;
-    if (!sigla && perfil === 'residente') throw new Error('Informe a sigla do residente.');
-    await api.auth.criarUsuario({ email, senha, sigla, perfil, lugar: st.lugar });
-    toast('Login criado.');
-    await rotear();
-    mostrarConvite({ email, sigla, perfil, comSenha: Boolean(senha), enviado: !senha && !api.demo });
-  });
   $('#cf-sec').onchange = async (e) => {
     const etapa = (txt, erro = false) => { const el = $('#cf-sec-status'); if (el) { el.textContent = txt; el.className = erro ? 'erro' : 'pequeno'; } };
     try { await importarPlanilhaSecretaria(e.target.files[0], etapa); }
@@ -667,6 +780,85 @@ VIEWS.config = async () => {
     await api.importar(JSON.parse(await e.target.files[0].text())); location.reload();
   });
   $('#cf-zerar') && ($('#cf-zerar').onclick = () => confirm('Apagar todos os dados da demonstração?') && api.zerar());
+};
+
+// ------------------------------------------------------------------ membros da casa (cl)
+const STATUS = [['', 'sem acesso'], ['residente', 'residente'], ['secretaria', 'cl']];
+VIEWS.membros = async () => {
+  const usuarios = (await api.auth.listarUsuarios()).filter((u) => u.lugar === st.lugar);
+  const loginDe = (sigla) => usuarios.find((u) => u.sigla && u.sigla === sigla);
+  const semPessoa = usuarios.filter((u) => !u.sigla || !cfg.pessoas.some((p) => p.sigla === u.sigla));
+  main().innerHTML = `<section class="card"><h2>Membros — ${esc(nomeLugar(st.lugar))}</h2>
+    <p class="pequeno">Moradores dividem o Caixa C (rateio PS/CO). "Até" = último mês (AAAA-MM) de quem saiu. Status: <strong>residente</strong> envia e
+      classifica os próprios extratos; <strong>cl</strong> tem acesso total ao lugar; <strong>sem acesso</strong> = sem login (informe o e-mail para criar).</p>
+    <div class="rolagem"><table class="lanc"><thead><tr><th>Sigla</th><th>Nome</th><th>Morador</th><th>Desde</th><th>Até</th><th>E-mail (login)</th><th>Status</th><th></th></tr></thead><tbody id="mb-lista">
+    ${cfg.pessoas.map((p, i) => {
+      const u = loginDe(p.sigla);
+      return `<tr data-i="${i}" data-uid="${esc(u?.uid || '')}"><td><input data-f="sigla" value="${esc(p.sigla)}" size="4"></td><td><input data-f="nome" value="${esc(p.nome)}"></td>
+        <td><input type="checkbox" data-f="morador" ${p.morador ? 'checked' : ''}></td><td><input data-f="desde" value="${esc(p.desde || '')}" size="7" placeholder="AAAA-MM"></td>
+        <td><input data-f="ate" value="${esc(p.ate || '')}" size="7" placeholder="AAAA-MM"></td>
+        <td>${u ? esc(u.email) : '<input data-f="email" placeholder="e-mail (opcional)" size="18">'}</td>
+        <td><select data-f="status">${opcoes(u ? STATUS.slice(1) : STATUS, u ? u.perfil : '')}</select></td>
+        <td class="acoes"><button class="mini" data-salvar="${i}">Salvar</button>${u ? ` <button class="mini sec" data-convite="${i}">Convite</button>` : ''} <button class="mini perigo" data-remover="${i}" title="Remover da lista de membros">✕</button></td></tr>`;
+    }).join('')}
+    ${semPessoa.map((u) => `<tr data-uid="${esc(u.uid)}" data-sopessoa="1"><td>${esc(u.sigla || '—')}</td><td colspan="4" class="pequeno">login sem cadastro de membro</td><td>${esc(u.email)}</td>
+        <td><select data-f="status">${opcoes(STATUS.slice(1), u.perfil)}</select></td><td class="acoes"><button class="mini" data-salvaru="${esc(u.uid)}">Salvar</button> <button class="mini sec" data-convitel="${esc(u.uid)}">Convite</button></td></tr>`).join('')}
+    </tbody></table></div><div id="us-convite"></div>
+    <details ${cfg.pessoas.length ? '' : 'open'}><summary>Novo membro</summary><div class="linha">
+      <input id="nm-sigla" placeholder="sigla" size="5"><input id="nm-nome" placeholder="nome"><label><input type="checkbox" id="nm-morador" checked> morador</label>
+      <input id="nm-email" placeholder="e-mail (opcional)"><select id="nm-status">${opcoes(STATUS, 'residente')}</select><button id="nm-ok">Incluir</button></div>
+      <p class="pequeno">Com e-mail, o login é criado e o Firebase envia o e-mail para a pessoa definir a senha; em seguida aparece a mensagem de convite.</p></details></section>`;
+  const ler = (tr) => Object.fromEntries($$('[data-f]', tr).map((x) => [x.dataset.f, x.type === 'checkbox' ? x.checked : x.value.trim()]));
+  $('#nm-ok').onclick = () => tentar(async () => {
+    const sigla = $('#nm-sigla').value.trim().toUpperCase(), nome = $('#nm-nome').value.trim(), email = $('#nm-email').value.trim(), status = $('#nm-status').value;
+    if (!sigla || !nome) throw new Error('Informe a sigla e o nome.');
+    if (cfg.pessoas.some((p) => p.sigla === sigla)) throw new Error('Já existe um membro com essa sigla.');
+    if (status && !email) throw new Error('Para dar acesso, informe o e-mail.');
+    cfg.pessoas.push({ sigla, nome, morador: $('#nm-morador').checked });
+    await api.salvarConfig(cfg);
+    if (status) await api.auth.criarUsuario({ email, senha: '', sigla, perfil: status, lugar: st.lugar });
+    toast('Membro incluído.'); await rotear();
+    if (status) mostrarConvite({ email, sigla, perfil: status, comSenha: false, enviado: !api.demo });
+  });
+  main().onclick = (e) => {
+    const tr = e.target.closest('tr');
+    const d = e.target.dataset;
+    if (d.salvar) tentar(async () => {
+      const i = Number(d.salvar), p = cfg.pessoas[i], v = ler(tr), u = usuarios.find((x) => x.uid === tr.dataset.uid);
+      const sigla = v.sigla.toUpperCase();
+      if (!sigla) throw new Error('Informe a sigla.');
+      if (cfg.pessoas.some((x, k) => k !== i && x.sigla === sigla)) throw new Error('Já existe um membro com essa sigla.');
+      Object.assign(p, { sigla, nome: v.nome, morador: v.morador, desde: v.desde, ate: v.ate });
+      await api.salvarConfig(cfg);
+      if (u) {
+        if (u.uid === sessao.uid && v.status !== 'secretaria' && !confirm('Você está tirando o seu próprio acesso total (cl). Continuar?')) return;
+        await api.auth.salvarUsuario(u.uid, { sigla, perfil: v.status });
+      } else if (v.status) {
+        if (!v.email) throw new Error('Para dar acesso, informe o e-mail.');
+        await api.auth.criarUsuario({ email: v.email, senha: '', sigla, perfil: v.status, lugar: st.lugar });
+        toast('Login criado.'); await rotear();
+        mostrarConvite({ email: v.email, sigla, perfil: v.status, comSenha: false, enviado: !api.demo });
+        return;
+      }
+      toast('Membro atualizado.'); rotear();
+    });
+    if (d.salvaru) tentar(async () => {
+      const v = ler(tr);
+      if (d.salvaru === sessao.uid && v.status !== 'secretaria' && !confirm('Você está tirando o seu próprio acesso total (cl). Continuar?')) return;
+      await api.auth.salvarUsuario(d.salvaru, { perfil: v.status }); toast('Login atualizado.'); rotear();
+    });
+    if (d.remover) tentar(async () => {
+      const p = cfg.pessoas[Number(d.remover)];
+      if (!confirm(`Remover ${p.sigla} — ${p.nome} da lista de membros? (os lançamentos e vales continuam; o login, se houver, não é apagado)`)) return;
+      cfg.pessoas.splice(Number(d.remover), 1); await api.salvarConfig(cfg); rotear();
+    });
+    const conv = d.convite !== undefined ? usuarios.find((x) => x.uid === tr.dataset.uid) : d.convitel ? usuarios.find((x) => x.uid === d.convitel) : null;
+    if (conv) tentar(async () => {
+      const enviar = confirm(`Enviar também o e-mail do Firebase para ${conv.email} definir (ou redefinir) a senha?\n(OK = enviar; Cancelar = só mostrar a mensagem de convite)`);
+      if (enviar) await api.auth.enviarDefinicaoSenha(conv.email);
+      mostrarConvite({ email: conv.email, sigla: conv.sigla, perfil: conv.perfil, comSenha: false, enviado: enviar && !api.demo });
+    });
+  };
 };
 
 // ------------------------------------------------------------------ convite por e-mail

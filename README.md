@@ -31,7 +31,14 @@ fatura do cartão Nubank (date/title/amount) · planilhas no formato do modelo c
    quando o saldo inicial do extrato difere do saldo da conta); rateio do déficit do Caixa C entre os moradores
    (B/S "PS" e C/E "CO", "PENSÃO+CONTRIB. LABORES").
 3. **Conferência** (abas 9 e 11, célula N1): saldo final de cada caixa = dinheiro + bancos + a justificar.
-4. **Fechar o mês** em Justificar guarda o total a justificar daquele mês.
+4. **Encerrar o mês** (em Vales) guarda o total a justificar daquele mês e trava vales, bancos e itens a justificar
+   do mês; "Reabrir o mês" desfaz.
+
+Outras telas: **Início** mostra os extratos pendentes (conta × mês não contabilizado ou com saldo que não encadeia) e,
+quando a conferência não fecha, de onde vem a diferença (caixa B/C e contas com saldo diferente do extrato).
+**Membros**: o cl inclui membros da casa e muda o status (sem acesso / residente / cl). **Justificar**: exclusão de
+vários itens de uma vez. **Relatórios**: exportação para xlsx (abas à escolha; 8–11 marcadas) e relatório
+**quadrimestral** (por lugar ou consolidado).
 
 ## Configuração do Firebase (uma vez)
 1. Crie um projeto no [console do Firebase](https://console.firebase.google.com) (plano Spark, gratuito).

@@ -111,6 +111,57 @@ export function valeEletronico({ cfg, vales, ano, mes, sigla }) {
   return html;
 }
 
+/** Relatório quadrimestral (q = 1: jan–abr, 2: mai–ago, 3: set–dez): por caixa, receitas e despesas por conceito em
+ *  cada mês e no quadrimestre (com o orçado), evolução mensal e comprovante do saldo no fim do quadrimestre. */
+export function quadrimestral({ cfg, vales, bancos, justificar, ano, q, snapshots }) {
+  const tabela = cfg.codigos || CODIGOS_PADRAO;
+  const orc = cfg.orcamento?.[ano] || {};
+  const meses = [1, 2, 3, 4].map((i) => (q - 1) * 4 + i);
+  const ultimo = meses[3];
+  const conf = Object.fromEntries(meses.map((m) => [m, conferir({ ano, mes: m, vales, bancos, justificar, contas: cfg.contas || [],
+    saldoInicial: cfg.saldoInicial?.[ano] || {}, dinheiro: cfg.dinheiro?.[ano]?.[m] || {}, snapshots })]));
+  const curto = MESES_LONGOS.map((m) => m.slice(0, 3));
+  let html = `<header class="rel-cab"><div><strong>${esc(cfg.casa || 'CCBV')}</strong> · RELATÓRIO QUADRIMESTRAL</div>
+    <div>${q}º quadrimestre de ${ano} (${MESES_LONGOS[meses[0] - 1]} a ${MESES_LONGOS[ultimo - 1]})</div></header>`;
+  for (const caixa of ['B', 'C']) {
+    const vs = vales.filter((v) => v.ano === ano && v.caixa === caixa);
+    html += `<h3>Caixa ${caixa}</h3>`;
+    for (const es of ['E', 'S']) {
+      html += `<table class="rel"><thead><tr><th>${es === 'E' ? 'Receitas' : 'Despesas'}</th>${meses.map((m) => `<th>${curto[m - 1]}</th>`).join('')}
+        <th>Quadrimestre</th><th>Orçado</th><th>Acumulado no ano</th></tr></thead><tbody>`;
+      const tot = Array(7).fill(0);
+      for (const [cod, nome] of Object.entries(tabela[`${caixa}|${es}`] || {})) {
+        const porMes = meses.map((m) => soma(vs.filter((v) => v.mes === m && v.es === es && v.tipo === cod)));
+        const qd = r2(porMes.reduce((a, b) => a + b, 0));
+        const o = (orc[`${caixa}|${es}|${cod}`] || 0) * 4;
+        const ac = soma(vs.filter((v) => v.mes <= ultimo && v.es === es && v.tipo === cod));
+        if (!qd && !o && !ac) continue;
+        [...porMes, qd, o, ac].forEach((x, i) => { tot[i] += x; });
+        html += `<tr>${td(`${nome} (${cod})`, 'txt')}${[...porMes, qd, o, ac].map((x) => td(moeda(x))).join('')}</tr>`;
+      }
+      html += `<tr class="tot">${td('Total', 'txt')}${tot.map((x) => td(moeda(r2(x)))).join('')}</tr></tbody></table>`;
+    }
+    html += `<table class="rel"><thead><tr><th>Evolução</th>${meses.map((m) => `<th>${curto[m - 1]}</th>`).join('')}</tr></thead><tbody>
+      <tr>${td('Saldo anterior', 'txt')}${meses.map((m) => td(moeda(conf[m][caixa].anterior))).join('')}</tr>
+      <tr>${td('Receitas', 'txt')}${meses.map((m) => td(moeda(conf[m][caixa].receitas))).join('')}</tr>
+      <tr>${td('Despesas', 'txt')}${meses.map((m) => td(moeda(conf[m][caixa].despesas))).join('')}</tr>
+      <tr class="tot">${td('Saldo final', 'txt')}${meses.map((m) => td(moeda(conf[m][caixa].final))).join('')}</tr>
+      <tr>${td('Bancos', 'txt')}${meses.map((m) => td(moeda(conf[m][caixa].bancos))).join('')}</tr>
+      <tr>${td('A justificar', 'txt')}${meses.map((m) => td(moeda(conf[m][caixa].justificar))).join('')}</tr>
+      <tr>${td('Diferença', 'txt')}${meses.map((m) => td(moeda(conf[m][caixa].diferenca))).join('')}</tr></tbody></table>`;
+    const f = conf[ultimo][caixa];
+    html += `<table class="rel estreita"><thead><tr><th colspan="2">Comprovante do saldo em ${MESES_LONGOS[ultimo - 1]}</th></tr></thead><tbody>
+      <tr>${td('Saldo no início do quadrimestre', 'txt')}${td(moeda(conf[meses[0]][caixa].anterior))}</tr>
+      <tr>${td('Receitas do quadrimestre', 'txt')}${td(moeda(r2(meses.reduce((s, m) => s + conf[m][caixa].receitas, 0))))}</tr>
+      <tr>${td('Despesas do quadrimestre', 'txt')}${td(moeda(r2(meses.reduce((s, m) => s + conf[m][caixa].despesas, 0))))}</tr>
+      <tr class="tot">${td('Saldo final', 'txt')}${td(moeda(f.final))}</tr>
+      <tr>${td('Caixa (dinheiro)', 'txt')}${td(moeda(f.dinheiro))}</tr><tr>${td('Bancos', 'txt')}${td(moeda(f.bancos))}</tr>
+      <tr>${td('A justificar', 'txt')}${td(moeda(f.justificar))}</tr><tr class="tot">${td('Total', 'txt')}${td(moeda(f.total))}</tr></tbody></table>
+      <p class="${Math.abs(f.diferenca) < 0.01 ? 'ok' : 'erro'}">${Math.abs(f.diferenca) < 0.01 ? 'Saldo final confere.' : `DIFERENÇA de ${moeda(f.diferenca)}.`}</p>`;
+  }
+  return html;
+}
+
 export const RELATORIOS = [
   { id: '8', nome: 'Caixa B — frente', fn: (o) => caixaFrente({ ...o, caixa: 'B' }) },
   { id: '9', nome: 'Caixa B — verso', fn: (o) => caixaVerso({ ...o, caixa: 'B' }) },
