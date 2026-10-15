@@ -553,10 +553,12 @@ VIEWS.config = async () => {
     <table class="lanc"><thead><tr><th>E-mail</th><th>Sigla</th><th>Perfil</th><th></th></tr></thead><tbody id="us-lista">
     ${usuarios.map((u) => `<tr data-uid="${esc(u.uid)}"><td>${esc(u.email)}</td><td><input data-u="sigla" value="${esc(u.sigla || '')}" size="5" list="siglas"></td>
       <td><select data-u="perfil">${opcoes([['residente', 'residente'], ['secretaria', 'secretaria']], u.perfil)}</select></td>
-      <td><button class="mini" data-salvaru="${esc(u.uid)}">Salvar</button></td></tr>`).join('')}</tbody></table>
-    <details><summary>Criar login</summary><div class="linha"><input id="us-email" placeholder="e-mail"><input id="us-senha" placeholder="senha provisória">
+      <td><button class="mini" data-salvaru="${esc(u.uid)}">Salvar</button> <button class="mini sec" data-convite="${esc(u.uid)}">Convite</button></td></tr>`).join('')}</tbody></table>
+    <div id="us-convite"></div>
+    <details><summary>Criar login</summary><div class="linha"><input id="us-email" placeholder="e-mail"><input id="us-senha" placeholder="senha provisória (opcional)">
       <input id="us-sigla" placeholder="sigla (ex.: RV)" size="8" list="siglas"><select id="us-perfil">${opcoes([['residente', 'residente'], ['secretaria', 'secretaria']])}</select>
-      <button id="us-ok">Criar</button></div><p class="pequeno">A pessoa troca a senha no primeiro acesso.</p></details></section>
+      <button id="us-ok">Criar</button></div><p class="pequeno">Sem senha provisória, o Firebase envia à pessoa um e-mail para ela
+      definir a própria senha. Com senha provisória, ela troca a senha no primeiro acesso. Em seguida aparece a mensagem de convite.</p></details></section>
   <section class="card"><h2>Cópia de segurança</h2><div class="linha"><button id="cf-backup" class="sec">Baixar cópia (JSON)</button>
     <label>Restaurar <input type="file" id="cf-restaurar" accept=".json"></label>${api.demo ? '<button id="cf-zerar" class="perigo">Apagar dados da demonstração</button>' : ''}</div></section>`;
   const lerTab = (sel, lst) => $$(`${sel} tr`).forEach((tr) => {
@@ -576,6 +578,14 @@ VIEWS.config = async () => {
   main().onclick = (e) => {
     if (e.target.dataset.delp) tentar(async () => { cfg.pessoas.splice(Number(e.target.dataset.delp), 1); await api.salvarConfig(cfg); rotear(); });
     if (e.target.dataset.delc) tentar(async () => { cfg.contas.splice(Number(e.target.dataset.delc), 1); await api.salvarConfig(cfg); rotear(); });
+    const cv = e.target.dataset.convite;
+    if (cv) tentar(async () => {
+      const tr = e.target.closest('tr');
+      const u = { email: tr.cells[0].textContent, sigla: $('[data-u=sigla]', tr).value.trim().toUpperCase(), perfil: $('[data-u=perfil]', tr).value };
+      const enviar = confirm(`Enviar também o e-mail do Firebase para ${u.email} definir (ou redefinir) a senha?\n(OK = enviar; Cancelar = só mostrar a mensagem de convite)`);
+      if (enviar) await api.auth.enviarDefinicaoSenha(u.email);
+      mostrarConvite({ ...u, comSenha: false, enviado: enviar && !api.demo });
+    });
     const uid = e.target.dataset.salvaru;
     if (uid) tentar(async () => {
       const tr = e.target.closest('tr');
@@ -588,8 +598,11 @@ VIEWS.config = async () => {
   $('#us-ok').onclick = () => tentar(async () => {
     const sigla = $('#us-sigla').value.trim().toUpperCase();
     if (!sigla) throw new Error('Informe a sigla da pessoa.');
-    await api.auth.criarUsuario({ email: $('#us-email').value.trim(), senha: $('#us-senha').value, sigla, perfil: $('#us-perfil').value });
-    toast('Login criado.'); rotear();
+    const email = $('#us-email').value.trim(), senha = $('#us-senha').value, perfil = $('#us-perfil').value;
+    await api.auth.criarUsuario({ email, senha, sigla, perfil });
+    toast('Login criado.');
+    await rotear();
+    mostrarConvite({ email, sigla, perfil, comSenha: Boolean(senha), enviado: !senha && !api.demo });
   });
   $('#cf-sec').onchange = async (e) => {
     const etapa = (txt, erro = false) => { const el = $('#cf-sec-status'); if (el) { el.textContent = txt; el.className = erro ? 'erro' : 'pequeno'; } };
@@ -606,6 +619,59 @@ VIEWS.config = async () => {
   });
   $('#cf-zerar') && ($('#cf-zerar').onclick = () => confirm('Apagar todos os dados da demonstração?') && api.zerar());
 };
+
+// ------------------------------------------------------------------ convite por e-mail
+const URL_PUBLICA = 'https://lab-soft.github.io/FinCon/';
+function textoConvite({ email, sigla, perfil, comSenha }) {
+  const nome = cfg.pessoas.find((p) => p.sigla === sigla)?.nome || '';
+  const primeiro = nome.split(' ')[0];
+  const passos = perfil === 'secretaria'
+    ? '3. Pelo menu você acessa os extratos de todos, gera os vales do mês, controla bancos e itens a justificar e '
+      + 'imprime os relatórios (Caixa B e C, folhas pessoais, livro caixa e vale eletrônico).'
+    : '3. Em "Meus extratos", escolha a sua conta e envie os extratos do mês: PDF ou planilha exportada do Itaú, CSV do '
+      + 'Nubank, fatura do cartão Nubank ou a planilha no modelo consolidado. Depois confira a classificação de cada '
+      + 'lançamento (Tipo1); os que aparecem com "???" precisam da sua indicação.\n'
+      + '4. Em "Meus vales" você vê e imprime os seus vales do mês.';
+  return {
+    assunto: 'Seu acesso ao FinCon — controle financeiro da CCBV',
+    corpo: `Olá${primeiro ? ', ' + primeiro : ''}!
+
+Seu acesso ao FinCon, o aplicativo de controle financeiro da CCBV, foi criado.
+
+E-mail de acesso: ${email}
+Sigla: ${sigla}${perfil === 'secretaria' ? ' (perfil: secretaria)' : ''}
+
+Como começar:
+1. ${comSenha
+    ? 'Use a senha provisória que vou te passar pessoalmente. No primeiro acesso, o app pede para você criar a sua senha.'
+    : 'Você vai receber (ou já recebeu) um e-mail de noreply@app-fincon.firebaseapp.com com um link para definir a sua '
+      + 'senha. Se não encontrar, procure na caixa de spam ou lixo eletrônico.'}
+2. Entre em ${URL_PUBLICA} com o seu e-mail e a senha.
+${passos}
+
+Privacidade: os arquivos de extrato são lidos no seu próprio computador; só os lançamentos vão para a base, e cada pessoa vê apenas os próprios dados.
+
+Qualquer dúvida, é só responder este e-mail.
+
+${sessao.sigla || ''}
+Secretaria — ${cfg.casa || 'CCBV'}`,
+  };
+}
+
+function mostrarConvite(u) {
+  const { assunto, corpo } = textoConvite(u);
+  const el = $('#us-convite');
+  const mailto = `mailto:${encodeURIComponent(u.email)}?subject=${encodeURIComponent(assunto)}&body=${encodeURIComponent(corpo)}`;
+  el.innerHTML = `<div class="card convite"><h3>Convite para ${esc(u.email)}</h3>
+    ${u.enviado ? '<p class="ok">O Firebase enviou o e-mail com o link para definir a senha.</p>' : ''}
+    <p class="pequeno">Mensagem de boas-vindas (o sistema não envia e-mails próprios): abra no seu programa de e-mail ou copie.</p>
+    <p><strong>Assunto:</strong> ${esc(assunto)}</p><textarea id="cv-texto" rows="16">${esc(corpo)}</textarea>
+    <div class="linha"><a class="botao" href="${mailto}">Abrir no meu e-mail</a><button id="cv-copiar" class="sec">Copiar texto</button>
+      <button id="cv-fechar" class="sec">Fechar</button></div></div>`;
+  $('#cv-copiar').onclick = () => tentar(async () => { await navigator.clipboard.writeText(`${assunto}\n\n${$('#cv-texto').value}`); toast('Mensagem copiada.'); });
+  $('#cv-fechar').onclick = () => { el.innerHTML = ''; };
+  el.scrollIntoView({ behavior: 'smooth' });
+}
 
 async function importarPlanilhaSecretaria(f, etapa = () => {}) {
   etapa('Carregando o leitor de planilhas…');

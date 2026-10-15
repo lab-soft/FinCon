@@ -25,6 +25,7 @@ export function createDemoApi() {
       async sair() { location.search = ''; },
       async trocarSenha() {},
       async recuperar() {},
+      async enviarDefinicaoSenha() {},
       /** só no demo: ver o app como uma pessoa (residente) ou como secretaria */
       async simular(perfil, sigla) {
         sessao = { uid: 'demo', email: `${sigla || 'sec'}@demo`, sigla: sigla || 'SEC', perfil };

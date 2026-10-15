@@ -15,6 +15,8 @@ const RESTRITAS = ['lancamentos', 'saldos', 'vales'];      // residente só lê 
 export function createFirebaseApi(config) {
   const app = initializeApp(config);
   const auth = getAuth(app);
+  auth.languageCode = 'pt-BR';                         // e-mails do Firebase (definir senha) em português
+  const URL_APP = location.origin + location.pathname;  // link de volta ao app depois de definir a senha
   const db = getFirestore(app);
   let sessao = null;
 
@@ -38,7 +40,9 @@ export function createFirebaseApi(config) {
         await updatePassword(auth.currentUser, nova);
         await updateDoc(doc(db, 'users', auth.currentUser.uid), { mustChange: false });
       },
-      async recuperar(email) { await sendPasswordResetEmail(auth, email); },
+      async recuperar(email) { await sendPasswordResetEmail(auth, email, { url: URL_APP }); },
+      /** e-mail do Firebase com o link para a pessoa definir (ou redefinir) a senha */
+      async enviarDefinicaoSenha(email) { await sendPasswordResetEmail(auth, email, { url: URL_APP }); },
       /** primeiro acesso: o primeiro usuário vira secretaria (uma única vez) */
       async souPrimeiro(sigla) {
         const u = auth.currentUser;
@@ -52,13 +56,16 @@ export function createFirebaseApi(config) {
         return sessao;
       },
       async criarConta(email, senha) { await createUserWithEmailAndPassword(auth, email, senha); },
-      /** a secretaria cria o login de alguém sem perder a própria sessão (app secundário) */
+      /** a secretaria cria o login de alguém sem perder a própria sessão (app secundário).
+       *  Sem senha informada: cria com uma senha aleatória e a pessoa define a sua pelo e-mail do Firebase. */
       async criarUsuario({ email, senha, sigla, perfil: papel }) {
         const sec = initializeApp(config, 'secundario-' + Date.now());
         const a2 = getAuth(sec);
-        const cred = await createUserWithEmailAndPassword(a2, email, senha);
-        await setDoc(doc(db, 'users', cred.user.uid), { email, sigla, perfil: papel, mustChange: true });
+        const provisoria = senha || Array.from(crypto.getRandomValues(new Uint8Array(18)), (b) => b.toString(36)).join('');
+        const cred = await createUserWithEmailAndPassword(a2, email, provisoria);
+        await setDoc(doc(db, 'users', cred.user.uid), { email, sigla, perfil: papel, mustChange: Boolean(senha) });
         await signOut(a2);
+        if (!senha) await sendPasswordResetEmail(auth, email, { url: URL_APP });
         return cred.user.uid;
       },
       async listarUsuarios() { return (await getDocs(collection(db, 'users'))).docs.map((d) => ({ uid: d.id, ...d.data() })); },
