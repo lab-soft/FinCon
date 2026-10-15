@@ -9,10 +9,15 @@ caixa, vale eletrônico).
 - **Produção**: Firebase (login por e-mail/senha + Firestore). Os extratos são lidos no navegador; só os
   lançamentos interpretados vão para a base.
 
-## Perfis
-- **secretaria**: importa a planilha da secretaria e os extratos de todos, classifica, gera os vales do mês
-  (com rateio do Caixa C e ajustes), controla bancos e itens a justificar, fecha os meses e imprime os relatórios.
-- **residente**: envia e classifica os próprios extratos e vê os próprios vales.
+## Lugares e perfis
+O app atende **vários lugares independentes** (cada um com suas pessoas, contas, códigos, saldos, vales e relatórios).
+- **adm** (administrador, global): cria os lugares e os primeiros logins; escolhendo um lugar no alto da tela, tem o
+  acesso completo a ele. O primeiro usuário do sistema é o administrador.
+- **cl** (local): acesso total ao próprio lugar — importa a planilha da secretaria e os extratos, classifica, gera os
+  vales do mês (rateio do Caixa C e ajustes), controla bancos e itens a justificar, fecha os meses, imprime os
+  relatórios e cria os logins de cl e residentes do lugar.
+- **residente** (local): envia e classifica os próprios extratos e vê os próprios vales.
+- **cr** (global, só consulta): vê a conferência e os relatórios de cada lugar e o **consolidado** de todos.
 
 ## Extratos aceitos
 PDF do Itaú · planilha exportada do Itaú (.xls/.xlsx, com anotações nas colunas à direita) · CSV da conta Nubank ·
@@ -34,12 +39,13 @@ fatura do cartão Nubank (date/title/amount) · planilhas no formato do modelo c
    `lab-soft.github.io`.
 3. Firestore Database → criar (região `southamerica-east1`) → Regras: cole o conteúdo de `firestore.rules`.
 4. Configurações do projeto → Seus apps → app da Web → copie a configuração para `js/firebase-config.js`.
-5. Abra o app, crie a conta da secretaria (Entrar → "Primeiro acesso da secretaria") e confirme "Sou a secretaria".
-   Depois, em Configuração, importe a planilha da secretaria e crie os logins dos residentes.
+5. Abra o app, crie a conta do administrador (Entrar → "Primeiro acesso do administrador") e confirme. Em Lugares,
+   crie os lugares e os primeiros logins de cl; o cl importa a planilha da secretaria e cria os logins dos residentes.
 
 ## Coleções do Firestore
-`users` (perfil e sigla) · `config/geral` (pessoas, contas, códigos, saldo inicial, orçamento) · `lancamentos` ·
-`saldos` (saldo real do extrato por conta/mês) · `vales` · `justificar` · `bancos` · `meses` (fechamentos).
+`users` (perfil, lugar e sigla) · `lugares` · `config/{lugar}` (pessoas, contas, códigos, saldo inicial, orçamento) · `lancamentos` ·
+`saldos` (saldo real do extrato por conta/mês) · `vales` · `justificar` · `bancos` · `meses` (fechamentos) — todos com o
+campo `lugar`.
 
 ## Estrutura
 `index.html` · `css/style.css` · `js/app.js` (telas) · `js/logic.js` (regras, geração, conferência) ·

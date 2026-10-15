@@ -11,7 +11,10 @@ body { margin: 0; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, san
 .topo { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: var(--acento); color: #fff; position: sticky; top: 0; z-index: 5; }
 @media (prefers-color-scheme: dark) { .topo { background: #22344a; } }
 .marca { font-weight: 700; font-size: 1.1rem; }
-.topo .ano { margin-left: auto; font-size: .9rem; color: #fff; }
+.topo .lugar { margin-left: auto; font-size: .9rem; color: #fff; }
+.topo .lugar[hidden] + .ano { margin-left: auto; }
+.topo .ano { font-size: .9rem; color: #fff; }
+.topo .lugar:not([hidden]) ~ .ano { margin-left: 0; }
 .topo select { margin-left: 4px; }
 #quem { font-size: .85rem; opacity: .9; }
 nav { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px; background: var(--cartao); border-bottom: 1px solid var(--borda); }

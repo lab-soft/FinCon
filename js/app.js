@@ -33,16 +33,23 @@ const xlsx = async () => (_xlsx ||= await import(SHEETJS));
 // ------------------------------------------------------------------ estado
 let sessao = null;
 let cfg = null;
-const st = { ano: Number(localStorage.getItem('fincon-ano')) || new Date().getFullYear(), mes: new Date().getMonth() + 1, cache: {} };
-const SEC = () => sessao?.perfil === 'secretaria';                 // perfil "cl" (acesso total)
-const VE_RELATORIOS = () => ['secretaria', 'cr'].includes(sessao?.perfil);
+const st = { ano: Number(localStorage.getItem('fincon-ano')) || new Date().getFullYear(), mes: new Date().getMonth() + 1, cache: {},
+  lugar: null, lugares: [] };
+const ADM = () => sessao?.perfil === 'adm';
+const GLOBAL = () => ['adm', 'cr'].includes(sessao?.perfil);           // veem todos os lugares
+const CONSOLIDADO = () => st.lugar === '*';
+// acesso total no lugar em uso: cl do lugar ou administrador (quando um lugar está escolhido)
+const SEC = () => (sessao?.perfil === 'secretaria' || ADM()) && Boolean(st.lugar) && !CONSOLIDADO();
+const VE_RELATORIOS = () => ['secretaria', 'cr', 'adm'].includes(sessao?.perfil);
 // valor gravado -> rótulo na tela ("secretaria" continua sendo o valor interno do perfil cl)
-const PERFIS = [['secretaria', 'cl — acesso total'], ['residente', 'residente — próprios extratos'], ['cr', 'cr — só relatórios']];
-const rotuloPerfil = (p) => ({ secretaria: 'cl', residente: 'residente', cr: 'cr' }[p] || p);
+const PERFIS = [['secretaria', 'cl — acesso total no lugar'], ['residente', 'residente — próprios extratos']];
+const PERFIS_GLOBAIS = [['cr', 'cr — só relatórios (todos os lugares)'], ['adm', 'adm — administrador (todos os lugares)']];
+const rotuloPerfil = (p) => ({ secretaria: 'cl', residente: 'residente', cr: 'cr', adm: 'adm' }[p] || p);
+const nomeLugar = (id) => (id === '*' ? 'Todos os lugares' : st.lugares.find((l) => l.id === id)?.nome || id || '');
 const CFG_PADRAO = () => ({ casa: 'CCBV', pessoas: [], contas: [], codigos: CODIGOS_PADRAO, saldoInicial: {}, orcamento: {}, regras: [] });
 
 async function dados(col, recarregar = false) {
-  const k = `${col}|${st.ano}`;
+  const k = `${col}|${st.lugar}|${st.ano}`;
   if (recarregar || !st.cache[k]) {
     const f = ['config'].includes(col) ? {} : { ano: st.ano };
     st.cache[k] = await api.listar(col, f);
@@ -61,16 +68,38 @@ const NAV = {
   residente: [['inicio', 'Início'], ['extratos', 'Meus extratos'], ['meusvales', 'Meus vales'], ['conta', 'Conta']],
   cr: [['inicio', 'Início'], ['relatorios', 'Relatórios'], ['conta', 'Conta']],
 };
+function navItens() {
+  if (ADM()) {
+    if (!st.lugar) return [['lugares', 'Lugares'], ['conta', 'Conta']];
+    if (CONSOLIDADO()) return [['inicio', 'Início'], ['relatorios', 'Relatórios'], ['lugares', 'Lugares'], ['conta', 'Conta']];
+    return [...NAV.secretaria.slice(0, -1), ['lugares', 'Lugares'], ['conta', 'Conta']];
+  }
+  return NAV[sessao.perfil] || NAV.residente;
+}
 function montarNav() {
-  const itens = NAV[sessao.perfil] || NAV.residente;
-  $('#nav').innerHTML = itens.map(([id, t]) => `<a href="#/${id}" data-v="${id}">${t}</a>`).join('');
+  $('#nav').innerHTML = navItens().map(([id, t]) => `<a href="#/${id}" data-v="${id}">${t}</a>`).join('');
   $('#quem').textContent = `${sessao.sigla ? sessao.sigla + ' · ' : ''}${rotuloPerfil(sessao.perfil)}${api.demo ? ' · DEMO' : ''}`;
   $('#seletor-ano').innerHTML = opcoes([2024, 2025, 2026, 2027, 2028].map((a) => [a, a]), st.ano);
+  const sl = $('#seletor-lugar');
+  if (GLOBAL() && st.lugares.length) {
+    sl.innerHTML = opcoes([...st.lugares.map((l) => [l.id, l.nome || l.id]), ['*', 'Todos (consolidado)']], st.lugar);
+    sl.disabled = false; sl.parentElement.hidden = false;
+  } else if (st.lugar) {
+    sl.innerHTML = opcoes([[st.lugar, nomeLugar(st.lugar)]], st.lugar); sl.disabled = true; sl.parentElement.hidden = false;
+  } else sl.parentElement.hidden = true;
+}
+async function trocarLugar(id) {
+  st.lugar = id || null; api.usarLugar(st.lugar);
+  if (GLOBAL() && id) localStorage.setItem('fincon-lugar', id);
+  cfg = { ...CFG_PADRAO(), ...((st.lugar && !CONSOLIDADO() ? await api.config(st.lugar) : null) || {}) };
+  if (!cfg.casa || cfg.casa === 'CCBV') cfg.casa = st.lugar && !CONSOLIDADO() ? (nomeLugar(st.lugar) || 'CCBV') : 'Todos os lugares';
+  st.cache = {};
+  montarNav();
 }
 async function rotear() {
   const v = (location.hash.replace('#/', '') || 'inicio').split('?')[0];
-  const permitidas = (NAV[sessao.perfil] || NAV.residente).map((x) => x[0]);
-  const view = permitidas.includes(v) ? v : 'inicio';
+  const permitidas = navItens().map((x) => x[0]);
+  const view = permitidas.includes(v) ? v : permitidas[0];
   $$('#nav a').forEach((a) => a.classList.toggle('ativo', a.dataset.v === view));
   main().innerHTML = '<p class="carregando">Carregando…</p>';
   main().onclick = null;
@@ -80,6 +109,7 @@ async function rotear() {
 // ------------------------------------------------------------------ início
 const VIEWS = {};
 VIEWS.inicio = async () => {
+  if (CONSOLIDADO()) return inicioConsolidado();
   let html = '';
   if (sessao.perfil !== 'cr') {
   const lanc = await dados('lancamentos');
@@ -497,7 +527,7 @@ VIEWS.justificar = async () => {
     if (m) tentar(async () => {
       const f = c.snaps[m];
       if (f) { if (confirm(`Reabrir ${MESES_LONGOS[m - 1]}? O total passa a ser recalculado.`)) await api.salvar('meses', { ...f, fechado: false }); }
-      else { const t = aJustificar(c.just, st.ano, m); await api.salvar('meses', { id: `${st.ano}_${m}`, ano: st.ano, mes: m, fechado: true, ...t }); }
+      else { const t = aJustificar(c.just, st.ano, m); await api.salvar('meses', { id: `${st.lugar}_${st.ano}_${m}`, ano: st.ano, mes: m, fechado: true, ...t }); }
       invalidar('meses'); rotear();
     });
   };
@@ -505,19 +535,24 @@ VIEWS.justificar = async () => {
 
 // ------------------------------------------------------------------ relatórios
 VIEWS.relatorios = async () => {
-  const c = await contexto();
-  const rel = RELATORIOS.find((r) => r.id === (st.rel || '8')) || RELATORIOS[0];
+  const cons = CONSOLIDADO() ? await consolidado() : null;
+  const c = cons || await contexto();
+  const cfgR = cons ? cons.cfg : cfg;
+  const lista = cons ? RELATORIOS.filter((r) => !r.pessoa) : RELATORIOS;
+  if (cons && !lista.some((r) => r.id === st.rel)) st.rel = '8';
+  const rel = lista.find((r) => r.id === (st.rel || '8')) || lista[0];
   st.rel = rel.id;
   const pessoaSel = st.relPessoa || cfg.pessoas[0]?.sigla || '';
   main().innerHTML = `<section class="card nao-imprime"><h2>Relatórios</h2><div class="linha">
-    <label>Relatório <select id="re-rel">${opcoes(RELATORIOS.map((r) => [r.id, `${r.id} — ${r.nome}`]), rel.id)}</select></label>
+    <label>Relatório <select id="re-rel">${opcoes(lista.map((r) => [r.id, `${r.id} — ${r.nome}`]), rel.id)}</select></label>
+    ${cons ? `<span class="pequeno">Consolidado de ${cons.n} lugares (folhas pessoais e vale eletrônico: escolha um lugar).</span>` : ''}
     <label>Mês ${seletorMes('re-mes', st.mes)}</label>
     ${rel.caixa ? `<label>Caixa <select id="re-caixa">${opcoes([['B', 'B'], ['C', 'C']], st.relCaixa || 'B')}</select></label>` : ''}
     ${rel.pessoa ? `<label>Pessoa <select id="re-pessoa">${rel.pessoa === 'opcional' ? '<option value="">todas</option>' : ''}${opcoes(cfg.pessoas.map((p) => [p.sigla, p.sigla]), rel.pessoa === 'opcional' ? (st.relPessoa || '') : pessoaSel)}</select></label>` : ''}
     <button onclick="window.print()">Imprimir</button></div></section>
     <section class="card relatorio" id="re-saida"></section>`;
   const desenhar = () => {
-    $('#re-saida').innerHTML = rel.fn({ cfg, vales: c.vales, bancos: c.bancos, justificar: c.just, ano: st.ano, mes: st.mes,
+    $('#re-saida').innerHTML = rel.fn({ cfg: cfgR, vales: c.vales, bancos: c.bancos, justificar: c.just, ano: st.ano, mes: st.mes,
       caixa: st.relCaixa || 'B', sigla: rel.pessoa === 'opcional' ? (st.relPessoa || '') : pessoaSel, snapshots: c.snaps });
   };
   $('#re-rel').onchange = (e) => { st.rel = e.target.value; rotear(); };
@@ -563,7 +598,7 @@ VIEWS.config = async () => {
     <p class="pequeno">Perfis: <strong>cl</strong> = acesso total (secretaria); <strong>residente</strong> = envia e classifica os
       próprios extratos (precisa de sigla); <strong>cr</strong> = só vê relatórios e a conferência, sem alterar nada (sigla opcional).</p>
     <table class="lanc"><thead><tr><th>E-mail</th><th>Sigla</th><th>Perfil</th><th></th></tr></thead><tbody id="us-lista">
-    ${usuarios.map((u) => `<tr data-uid="${esc(u.uid)}"><td>${esc(u.email)}</td><td><input data-u="sigla" value="${esc(u.sigla || '')}" size="5" list="siglas"></td>
+    ${usuarios.filter((u) => u.lugar === st.lugar).map((u) => `<tr data-uid="${esc(u.uid)}"><td>${esc(u.email)}</td><td><input data-u="sigla" value="${esc(u.sigla || '')}" size="5" list="siglas"></td>
       <td><select data-u="perfil">${opcoes(PERFIS, u.perfil)}</select></td>
       <td><button class="mini" data-salvaru="${esc(u.uid)}">Salvar</button> <button class="mini sec" data-convite="${esc(u.uid)}">Convite</button></td></tr>`).join('')}</tbody></table>
     <div id="us-convite"></div>
@@ -613,7 +648,7 @@ VIEWS.config = async () => {
     const sigla = $('#us-sigla').value.trim().toUpperCase();
     const email = $('#us-email').value.trim(), senha = $('#us-senha').value, perfil = $('#us-perfil').value;
     if (!sigla && perfil === 'residente') throw new Error('Informe a sigla do residente.');
-    await api.auth.criarUsuario({ email, senha, sigla, perfil });
+    await api.auth.criarUsuario({ email, senha, sigla, perfil, lugar: st.lugar });
     toast('Login criado.');
     await rotear();
     mostrarConvite({ email, sigla, perfil, comSenha: Boolean(senha), enviado: !senha && !api.demo });
@@ -636,12 +671,18 @@ VIEWS.config = async () => {
 
 // ------------------------------------------------------------------ convite por e-mail
 const URL_PUBLICA = 'https://lab-soft.github.io/FinCon/';
-function textoConvite({ email, sigla, perfil, comSenha }) {
-  const nome = cfg.pessoas.find((p) => p.sigla === sigla)?.nome || '';
+function textoConvite({ email, sigla, perfil, comSenha, lugar }) {
+  const nome = (cfg.pessoas || []).find((p) => p.sigla === sigla)?.nome || '';
+  const global = ['adm', 'cr'].includes(perfil);
+  const onde = global ? 'todos os lugares' : nomeLugar(lugar || st.lugar);
   const primeiro = nome.split(' ')[0];
-  const passos = perfil === 'cr'
-    ? '3. Em "Relatórios" você vê e imprime os relatórios do mês (Caixa B e C frente e verso, folhas pessoais, livro caixa '
-      + 'e vale eletrônico); em "Início", a conferência de cada mês. Seu acesso é só de consulta.'
+  const passos = perfil === 'adm'
+    ? '3. Como administrador, em "Lugares" você cria os lugares e os primeiros logins de cada um; escolhendo um lugar no '
+      + 'alto da tela, tem o acesso completo a ele.'
+    : perfil === 'cr'
+    ? '3. No alto da tela, escolha o lugar (ou "Todos" para o consolidado). Em "Relatórios" você vê e imprime os relatórios '
+      + 'do mês (Caixa B e C frente e verso, folhas pessoais, livro caixa e vale eletrônico); em "Início", a conferência de '
+      + 'cada mês. Seu acesso é só de consulta.'
     : perfil === 'secretaria'
     ? '3. Pelo menu você acessa os extratos de todos, gera os vales do mês, controla bancos e itens a justificar e '
       + 'imprime os relatórios (Caixa B e C, folhas pessoais, livro caixa e vale eletrônico).'
@@ -657,6 +698,7 @@ Seu acesso ao FinCon, o aplicativo de controle financeiro da CCBV, foi criado.
 
 E-mail de acesso: ${email}
 ${sigla ? `Sigla: ${sigla}\n` : ''}Perfil: ${rotuloPerfil(perfil)}
+Lugar: ${onde}
 
 Como começar:
 1. ${comSenha
@@ -671,7 +713,7 @@ Privacidade: os arquivos de extrato são lidos no seu próprio computador; só o
 Qualquer dúvida, é só responder este e-mail.
 
 ${sessao.sigla || ''}
-Secretaria — ${cfg.casa || 'CCBV'}`,
+${global ? 'Administração do FinCon' : `Secretaria — ${onde}`}`,
   };
 }
 
@@ -718,23 +760,169 @@ async function importarPlanilhaSecretaria(f, etapa = () => {}) {
   etapa(`Gravando ${r.bancos.length} movimentos de banco…`);
   await api.salvarVarios('bancos', r.bancos);
   etapa(`Gravando ${r.justificar.length} itens a justificar e ${r.meses.length} fechamentos…`);
-  await api.salvarVarios('justificar', r.justificar.map((j) => ({ ...j, ano: j.ano || r.ano })));
-  await api.salvarVarios('meses', r.meses);
+  // itens de anos anteriores (ou sem data) contam desde o começo do ano importado
+  await api.salvarVarios('justificar', r.justificar.map((j) => ({ ...j, ano: r.ano, mes: !j.ano || j.ano < r.ano || !j.mes ? 1 : j.mes })));
+  await api.salvarVarios('meses', r.meses.map((m) => ({ ...m, id: `${st.lugar}_${m.ano}_${m.mes}` })));
   etapa('Importação concluída.');
   st.ano = r.ano; localStorage.setItem('fincon-ano', r.ano);
   st.cache = {};
   toast('Planilha importada.'); location.hash = '#/inicio'; rotear();
 }
 
+// ------------------------------------------------------------------ consolidado (todos os lugares)
+async function consolidado() {
+  const k = `consolidado|${st.ano}`;
+  if (st.cache[k]) return st.cache[k];
+  const res = { vales: [], bancos: [], just: [], snaps: {}, n: 0,
+    cfg: { ...CFG_PADRAO(), casa: 'Todos os lugares', pessoas: [], contas: [], saldoInicial: { [st.ano]: { B: 0, C: 0 } }, orcamento: { [st.ano]: {} } } };
+  const porMes = {};
+  for (const l of st.lugares) {
+    const [c, vales, bancos, just, meses] = await Promise.all([api.config(l.id),
+      ...['vales', 'bancos', 'justificar', 'meses'].map((col) => api.listar(col, { ano: st.ano, lugar: l.id }))]);
+    const cf = { ...CFG_PADRAO(), ...(c || {}) };
+    res.n++;
+    if (res.n === 1) res.cfg.codigos = cf.codigos;
+    // contas com o lugar no nome (siglas iguais em lugares diferentes)
+    const pre = (id) => `${l.id}:${id}`;
+    res.cfg.contas.push(...cf.contas.map((x) => ({ ...x, id: pre(x.id) })));
+    res.bancos.push(...bancos.map((b) => ({ ...b, conta: pre(b.conta) })));
+    res.vales.push(...vales); res.just.push(...just);
+    const si = cf.saldoInicial?.[st.ano] || {};
+    res.cfg.saldoInicial[st.ano].B += si.B || 0; res.cfg.saldoInicial[st.ano].C += si.C || 0;
+    for (const [kk, v] of Object.entries(cf.orcamento?.[st.ano] || {})) res.cfg.orcamento[st.ano][kk] = (res.cfg.orcamento[st.ano][kk] || 0) + v;
+    // total a justificar por mês: o fechamento do lugar, ou o calculado se o mês está aberto
+    const snaps = Object.fromEntries(meses.filter((m) => m.fechado).map((m) => [m.mes, m]));
+    for (let m = 1; m <= 12; m++) {
+      const j = snaps[m] || aJustificar(just, st.ano, m);
+      const x = (porMes[m] ||= { B: 0, Cax: 0, C: 0 });
+      x.B = r2(x.B + (j.B || 0)); x.Cax = r2(x.Cax + (j.Cax || 0)); x.C = r2(x.C + (j.C || 0));
+    }
+    (res.porLugar ||= []).push({ lugar: l, cfg: cf, vales, bancos, just, snaps });
+  }
+  res.snaps = porMes;
+  return (st.cache[k] = res);
+}
+
+async function inicioConsolidado() {
+  const c = await consolidado();
+  const linha = (rotulo, d, conta) => {
+    let h = `<tr><th>${esc(rotulo)}</th>`;
+    for (let m = 1; m <= 12; m++) {
+      if (!d.vales.some((v) => v.mes === m)) { h += '<td><span class="vazio">—</span></td>'; continue; }
+      const x = conferir({ ano: st.ano, mes: m, vales: d.vales, bancos: d.bancos, justificar: d.just, contas: conta.contas,
+        saldoInicial: conta.saldoInicial?.[st.ano] || {}, snapshots: d.snaps });
+      h += `<td class="${Math.abs(x.diferenca) < 0.01 ? 'ok' : 'erro'}">${Math.abs(x.diferenca) < 0.01 ? '✓' : moeda(x.diferenca)}</td>`;
+    }
+    return h + '</tr>';
+  };
+  let html = `<section class="card"><h2>Conferência de ${st.ano} — todos os lugares</h2><div class="rolagem"><table class="grade">
+    <thead><tr><th>Lugar</th>${MESES.map((m) => `<th>${m}</th>`).join('')}</tr></thead><tbody>`;
+  for (const p of c.porLugar || []) html += linha(p.lugar.nome || p.lugar.id, p, p.cfg);
+  html += `${linha('Consolidado', c, c.cfg)}</tbody></table></div>
+    <p class="pequeno">✓ = saldo final dos caixas B e C igual a caixa + bancos + a justificar. Os relatórios do consolidado somam todos os lugares.</p></section>`;
+  main().innerHTML = html;
+}
+
+// ------------------------------------------------------------------ lugares (administrador)
+const slug = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+VIEWS.lugares = async () => {
+  const legada = await api.configLegada();
+  const migrado = st.lugares.some((l) => l.migradoDe === 'geral');
+  const usuarios = await api.auth.listarUsuarios();
+  const contagem = (id) => usuarios.filter((u) => u.lugar === id).length;
+  main().innerHTML = `
+  ${legada && !migrado ? `<section class="card"><h2>Migrar os dados da versão anterior</h2>
+    <p>Os dados lançados antes (configuração, lançamentos, vales, bancos, justificar e fechamentos) ainda não têm lugar.
+      Escolha o lugar para onde vão; os logins de cl e residentes sem lugar também passam a ele.</p>
+    <div class="linha"><label>Nome do lugar <input id="mg-nome" value="${esc(legada.casa || 'CCBV')}"></label>
+      <label>Identificador <input id="mg-id" value="${esc(slug(legada.casa || 'CCBV'))}" size="10"></label>
+      <button id="mg-ok">Migrar</button></div><div id="mg-status" class="pequeno"></div></section>` : ''}
+  <section class="card"><h2>Lugares</h2>
+    <table class="lanc"><thead><tr><th>Lugar</th><th>Identificador</th><th>Logins</th><th></th></tr></thead><tbody>
+    ${st.lugares.map((l) => `<tr><td>${esc(l.nome || l.id)}</td><td>${esc(l.id)}</td><td>${contagem(l.id)}</td>
+      <td><button class="mini sec" data-usar="${esc(l.id)}">Usar</button></td></tr>`).join('') || '<tr><td colspan="4" class="pequeno">Nenhum lugar ainda.</td></tr>'}
+    </tbody></table>
+    <details ${st.lugares.length ? '' : 'open'}><summary>Novo lugar</summary>
+      <div class="linha"><label>Nome <input id="lg-nome" placeholder="ex.: Centro Cultural X"></label>
+        <label>Identificador <input id="lg-id" placeholder="ex.: ccx" size="10"></label></div>
+      <p class="pequeno">Primeiro login de cl (acesso total no lugar) — opcional:</p>
+      <div class="linha"><input id="lg-email" placeholder="e-mail do cl"><input id="lg-senha" placeholder="senha provisória (opcional)">
+        <input id="lg-sigla" placeholder="sigla (opcional)" size="10"><button id="lg-criar-lugar">Criar lugar</button></div></details></section>
+  <section class="card"><h2>Logins globais</h2><p class="pequeno">cr = só relatórios de todos os lugares; adm = administrador.</p>
+    <table class="lanc"><thead><tr><th>E-mail</th><th>Perfil</th><th>Lugar</th><th></th></tr></thead><tbody>
+    ${usuarios.map((u) => `<tr data-uid="${esc(u.uid)}"><td>${esc(u.email)}</td><td>${esc(rotuloPerfil(u.perfil))}</td><td>${esc(u.lugar ? nomeLugar(u.lugar) : 'todos')}</td>
+      <td>${['cr', 'adm'].includes(u.perfil) ? `<button class="mini sec" data-conviteg="${esc(u.uid)}">Convite</button>` : ''}</td></tr>`).join('')}
+    </tbody></table>
+    <details><summary>Criar login global</summary><div class="linha"><input id="gl-email" placeholder="e-mail"><input id="gl-senha" placeholder="senha provisória (opcional)">
+      <select id="gl-perfil">${opcoes(PERFIS_GLOBAIS, 'cr')}</select><button id="gl-ok">Criar</button></div></details>
+    <div id="us-convite"></div></section>`;
+  $('#lg-nome').oninput = (e) => { if (!$('#lg-id').dataset.mexeu) $('#lg-id').value = slug(e.target.value); };
+  $('#lg-id').oninput = (e) => { e.target.dataset.mexeu = '1'; };
+  $('#mg-ok') && ($('#mg-ok').onclick = () => tentar(() => migrarLegado($('#mg-id').value.trim(), $('#mg-nome').value.trim(), legada, usuarios)));
+  $('#lg-criar-lugar').onclick = () => tentar(async () => {
+    const nome = $('#lg-nome').value.trim(), id = slug($('#lg-id').value || nome);
+    if (!nome || !id) throw new Error('Informe o nome do lugar.');
+    if (st.lugares.some((l) => l.id === id)) throw new Error('Já existe um lugar com esse identificador.');
+    await api.salvarLugar({ id, nome, criado: new Date().toISOString() });
+    await api.salvarConfig({ ...CFG_PADRAO(), casa: nome }, id);
+    st.lugares = await api.lugares();
+    const email = $('#lg-email').value.trim(), senha = $('#lg-senha').value, sigla = $('#lg-sigla').value.trim().toUpperCase();
+    if (email) await api.auth.criarUsuario({ email, senha, sigla, perfil: 'secretaria', lugar: id });
+    toast('Lugar criado.');
+    await trocarLugar(st.lugar || id);
+    await rotear();
+    if (email) mostrarConvite({ email, sigla, perfil: 'secretaria', lugar: id, comSenha: Boolean(senha), enviado: !senha && !api.demo });
+  });
+  $('#gl-ok').onclick = () => tentar(async () => {
+    const email = $('#gl-email').value.trim(), senha = $('#gl-senha').value, perfil = $('#gl-perfil').value;
+    if (!email) throw new Error('Informe o e-mail.');
+    await api.auth.criarUsuario({ email, senha, sigla: '', perfil });
+    toast('Login criado.'); await rotear();
+    mostrarConvite({ email, sigla: '', perfil, comSenha: Boolean(senha), enviado: !senha && !api.demo });
+  });
+  main().onclick = (e) => {
+    if (e.target.dataset.usar) tentar(async () => { await trocarLugar(e.target.dataset.usar); location.hash = '#/inicio'; rotear(); });
+    const g = e.target.dataset.conviteg;
+    if (g) tentar(async () => {
+      const u = usuarios.find((x) => x.uid === g);
+      const enviar = confirm(`Enviar também o e-mail do Firebase para ${u.email} definir (ou redefinir) a senha?`);
+      if (enviar) await api.auth.enviarDefinicaoSenha(u.email);
+      mostrarConvite({ email: u.email, sigla: '', perfil: u.perfil, comSenha: false, enviado: enviar && !api.demo });
+    });
+  };
+};
+
+async function migrarLegado(id, nome, legada, usuarios) {
+  id = slug(id || nome);
+  if (!id || !nome) throw new Error('Informe o nome e o identificador do lugar.');
+  const etapa = (txt) => { const el = $('#mg-status'); if (el) el.textContent = txt; };
+  if (!confirm(`Mover todos os dados atuais para o lugar "${nome}" (${id})?`)) return;
+  etapa('Criando o lugar…');
+  await api.salvarLugar({ id, nome, migradoDe: 'geral', criado: new Date().toISOString() });
+  await api.salvarConfig({ ...legada, casa: legada.casa || nome }, id);
+  for (const col of ['lancamentos', 'saldos', 'vales', 'justificar', 'bancos', 'meses']) {
+    const sem = (await api.listarTudo(col)).filter((d) => !d.lugar);
+    etapa(`Movendo ${sem.length} documentos de ${col}…`);
+    if (sem.length) await api.salvarVarios(col, sem.map((d) => ({ ...d, lugar: id })));
+  }
+  const semLugar = usuarios.filter((u) => ['secretaria', 'residente'].includes(u.perfil) && !u.lugar);
+  etapa(`Ligando ${semLugar.length} logins ao lugar…`);
+  for (const u of semLugar) await api.auth.salvarUsuario(u.uid, { lugar: id });
+  st.lugares = await api.lugares();
+  await trocarLugar(id);
+  toast('Migração concluída.'); location.hash = '#/inicio'; rotear();
+}
+
 // ------------------------------------------------------------------ conta
 VIEWS.conta = async () => {
   main().innerHTML = `<section class="card"><h2>Conta</h2><p>${esc(sessao.email)}${sessao.sigla ? ' · ' + esc(sessao.sigla) : ''} · ${esc(rotuloPerfil(sessao.perfil))}</p>
-    ${api.demo ? `<p class="pequeno">Demonstração: ver o app como <select id="ct-sim">${opcoes([['secretaria|SEC', 'cl (acesso total)'], ['cr|', 'cr (só relatórios)'], ...cfg.pessoas.map((p) => [`residente|${p.sigla}`, `residente ${p.sigla}`])], `${sessao.perfil}|${sessao.sigla}`)}</select></p>` : `
+    ${api.demo ? `<p class="pequeno">Demonstração: ver o app como <select id="ct-sim">${opcoes([['adm|', 'adm (administrador)'], ['cr|', 'cr (só relatórios)'], ['secretaria|', `cl de ${nomeLugar(st.lugar) || '…'}`], ...(cfg.pessoas || []).map((p) => [`residente|${p.sigla}`, `residente ${p.sigla}`])], `${sessao.perfil}|${sessao.sigla}`)}</select></p>` : `
     <div class="linha"><input type="password" id="ct-nova" placeholder="nova senha"><button id="ct-trocar">Trocar senha</button></div>`}
     <button id="ct-sair" class="sec">Sair</button></section>`;
   $('#ct-sair').onclick = () => api.auth.sair();
   $('#ct-trocar') && ($('#ct-trocar').onclick = () => tentar(async () => { await api.auth.trocarSenha($('#ct-nova').value); toast('Senha trocada.'); }));
-  $('#ct-sim') && ($('#ct-sim').onchange = (e) => { const [p, s] = e.target.value.split('|'); api.auth.simular(p, s); });
+  $('#ct-sim') && ($('#ct-sim').onchange = (e) => { const [p, s] = e.target.value.split('|'); api.auth.simular(p, s, st.lugar && st.lugar !== '*' ? st.lugar : null); });
 };
 
 // ------------------------------------------------------------------ login e início
@@ -744,7 +932,7 @@ function telaLogin(extra = '') {
     <label>E-mail <input id="lg-email" type="email" autocomplete="username"></label>
     <label>Senha <input id="lg-senha" type="password" autocomplete="current-password"></label>
     <div class="linha"><button id="lg-ok">Entrar</button><button id="lg-esqueci" class="sec">Esqueci a senha</button></div>
-    <details><summary>Primeiro acesso da secretaria</summary><p class="pequeno">Crie a conta e, em seguida, confirme que você é a secretaria (só o primeiro usuário pode).</p>
+    <details><summary>Primeiro acesso do administrador</summary><p class="pequeno">Crie a conta e, em seguida, confirme que você é o administrador (só o primeiro usuário pode).</p>
       <button id="lg-criar" class="sec">Criar conta com este e-mail e senha</button></details></section>`;
   $('#lg-ok').onclick = () => tentar(() => api.auth.entrar($('#lg-email').value.trim(), $('#lg-senha').value));
   $('#lg-esqueci').onclick = () => tentar(async () => { await api.auth.recuperar($('#lg-email').value.trim()); toast('Enviamos um e-mail para redefinir a senha.'); });
@@ -756,14 +944,34 @@ api.auth.onChange(async (u) => {
   if (!u) { telaLogin(); return; }
   if (u.semPerfil) {
     telaLogin(u.podeSerPrimeiro
-      ? `<p>Conta criada (${esc(u.email)}). <button id="lg-sou">Sou a secretaria</button> <input id="lg-sigla" placeholder="sua sigla" size="5"></p>`
-      : `<p>Sua conta (${esc(u.email)}) ainda não foi liberada: peça à secretaria.</p>`);
+      ? `<p>Conta criada (${esc(u.email)}). <button id="lg-sou">Sou o administrador</button> <input id="lg-sigla" placeholder="sua sigla" size="5"></p>`
+      : `<p>Sua conta (${esc(u.email)}) ainda não foi liberada: peça a quem administra o seu lugar.</p>`);
     $('#lg-sou') && ($('#lg-sou').onclick = () => tentar(async () => { await api.auth.souPrimeiro($('#lg-sigla').value.trim() || 'SEC'); location.reload(); }));
     return;
   }
-  cfg = { ...CFG_PADRAO(), ...((await api.config()) || {}) };
-  st.cache = {};
-  montarNav();
+  // versão anterior (um lugar só): quem fez o primeiro acesso vira administrador
+  if (u.fundador && u.perfil !== 'adm') {
+    $('#nav').innerHTML = '';
+    main().innerHTML = `<section class="card login"><h2>Atualização: vários lugares</h2>
+      <p>O FinCon agora atende vários lugares independentes. Como você fez o primeiro acesso, passa a ser o
+      <strong>administrador</strong> (adm): cria os lugares e os primeiros logins de cada um. Em seguida, na tela Lugares,
+      os dados atuais são movidos para um lugar (ex.: CCBV).</p><button id="up-adm">Tornar-me administrador</button></section>`;
+    $('#up-adm').onclick = () => tentar(async () => { await api.auth.tornarAdm(); location.reload(); });
+    return;
+  }
+  if (!GLOBAL() && !u.lugar) {
+    $('#nav').innerHTML = '';
+    main().innerHTML = `<section class="card login"><h2>Aguardando liberação</h2><p>Sua conta (${esc(u.email)}) ainda não está ligada a um
+      lugar. Isso acontece durante a atualização para vários lugares: peça ao administrador para concluir a migração.</p>
+      <button id="ag-sair" class="sec">Sair</button></section>`;
+    $('#ag-sair').onclick = () => api.auth.sair();
+    return;
+  }
+  st.lugares = await api.lugares();
+  const salvo = localStorage.getItem('fincon-lugar');
+  const inicial = !GLOBAL() ? u.lugar
+    : (salvo && (salvo === '*' || st.lugares.some((l) => l.id === salvo)) ? salvo : st.lugares[0]?.id || (sessao.perfil === 'cr' ? '*' : null));
+  await trocarLugar(inicial);
   if (u.mustChange && !api.demo) {
     main().innerHTML = `<section class="card login"><h2>Defina sua senha</h2><input type="password" id="ms-nova" placeholder="nova senha (mín. 6)"><button id="ms-ok">Salvar</button></section>`;
     $('#ms-ok').onclick = () => tentar(async () => { await api.auth.trocarSenha($('#ms-nova').value); location.reload(); });
@@ -773,3 +981,4 @@ api.auth.onChange(async (u) => {
 });
 window.addEventListener('hashchange', () => sessao && !sessao.semPerfil && rotear());
 $('#seletor-ano').onchange = (e) => { st.ano = Number(e.target.value); localStorage.setItem('fincon-ano', st.ano); st.cache = {}; rotear(); };
+$('#seletor-lugar').onchange = (e) => tentar(async () => { await trocarLugar(e.target.value); rotear(); });
