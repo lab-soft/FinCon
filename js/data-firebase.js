@@ -74,7 +74,7 @@ export function createFirebaseApi(config) {
     async config() { const s = await getDoc(doc(db, 'config', 'geral')); return s.exists() ? s.data() : null; },
     async salvarConfig(cfg) { await setDoc(doc(db, 'config', 'geral'), JSON.parse(JSON.stringify(cfg))); },
     async listar(col, f = {}) {
-      if (sessao?.perfil !== 'secretaria' && RESTRITAS.includes(col)) f = { ...f, sigla: sessao?.sigla };
+      if (sessao?.perfil === 'residente' && RESTRITAS.includes(col)) f = { ...f, sigla: sessao?.sigla };
       const conds = Object.entries(f).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => where(k, '==', v));
       const snap = await getDocs(query(collection(db, col), ...conds));
       return snap.docs.map((d) => ({ id: d.id, ...d.data() }));

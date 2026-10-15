@@ -28,7 +28,7 @@ export function createDemoApi() {
       async enviarDefinicaoSenha() {},
       /** só no demo: ver o app como uma pessoa (residente) ou como secretaria */
       async simular(perfil, sigla) {
-        sessao = { uid: 'demo', email: `${sigla || 'sec'}@demo`, sigla: sigla || 'SEC', perfil };
+        sessao = { uid: 'demo', email: `${sigla || perfil}@demo`, sigla: perfil === 'cr' ? '' : (sigla || 'SEC'), perfil };
         ouvintes.forEach((cb) => cb(sessao));
       },
       async criarUsuario({ email, sigla, perfil }) {
@@ -40,7 +40,8 @@ export function createDemoApi() {
     async config() { return db.colecoes.config.geral || null; },
     async salvarConfig(cfg) { db.colecoes.config.geral = cfg; gravar(); },
     async listar(col, f = {}) {
-      if (sessao.perfil !== 'secretaria' && ['lancamentos', 'saldos', 'vales'].includes(col)) f = { ...f, sigla: sessao.sigla };
+      if (sessao.perfil === 'residente' && ['lancamentos', 'saldos', 'vales'].includes(col)) f = { ...f, sigla: sessao.sigla };
+      if (sessao.perfil === 'cr' && ['lancamentos', 'saldos'].includes(col)) return [];
       return filtra(db.colecoes[col] || {}, f);
     },
     async salvar(col, obj) {

@@ -34,7 +34,11 @@ const xlsx = async () => (_xlsx ||= await import(SHEETJS));
 let sessao = null;
 let cfg = null;
 const st = { ano: Number(localStorage.getItem('fincon-ano')) || new Date().getFullYear(), mes: new Date().getMonth() + 1, cache: {} };
-const SEC = () => sessao?.perfil === 'secretaria';
+const SEC = () => sessao?.perfil === 'secretaria';                 // perfil "cl" (acesso total)
+const VE_RELATORIOS = () => ['secretaria', 'cr'].includes(sessao?.perfil);
+// valor gravado -> rótulo na tela ("secretaria" continua sendo o valor interno do perfil cl)
+const PERFIS = [['secretaria', 'cl — acesso total'], ['residente', 'residente — próprios extratos'], ['cr', 'cr — só relatórios']];
+const rotuloPerfil = (p) => ({ secretaria: 'cl', residente: 'residente', cr: 'cr' }[p] || p);
 const CFG_PADRAO = () => ({ casa: 'CCBV', pessoas: [], contas: [], codigos: CODIGOS_PADRAO, saldoInicial: {}, orcamento: {}, regras: [] });
 
 async function dados(col, recarregar = false) {
@@ -55,11 +59,12 @@ const NAV = {
   secretaria: [['inicio', 'Início'], ['extratos', 'Extratos'], ['vales', 'Vales'], ['bancos', 'Bancos'],
     ['justificar', 'Justificar'], ['relatorios', 'Relatórios'], ['config', 'Configuração'], ['conta', 'Conta']],
   residente: [['inicio', 'Início'], ['extratos', 'Meus extratos'], ['meusvales', 'Meus vales'], ['conta', 'Conta']],
+  cr: [['inicio', 'Início'], ['relatorios', 'Relatórios'], ['conta', 'Conta']],
 };
 function montarNav() {
   const itens = NAV[sessao.perfil] || NAV.residente;
   $('#nav').innerHTML = itens.map(([id, t]) => `<a href="#/${id}" data-v="${id}">${t}</a>`).join('');
-  $('#quem').textContent = `${sessao.sigla || ''} · ${sessao.perfil}${api.demo ? ' · DEMO' : ''}`;
+  $('#quem').textContent = `${sessao.sigla ? sessao.sigla + ' · ' : ''}${rotuloPerfil(sessao.perfil)}${api.demo ? ' · DEMO' : ''}`;
   $('#seletor-ano').innerHTML = opcoes([2024, 2025, 2026, 2027, 2028].map((a) => [a, a]), st.ano);
 }
 async function rotear() {
@@ -75,9 +80,11 @@ async function rotear() {
 // ------------------------------------------------------------------ início
 const VIEWS = {};
 VIEWS.inicio = async () => {
+  let html = '';
+  if (sessao.perfil !== 'cr') {
   const lanc = await dados('lancamentos');
   const pessoas = pessoasVisiveis();
-  let html = `<section class="card"><h2>Situação de ${st.ano}</h2>
+  html += `<section class="card"><h2>Situação de ${st.ano}</h2>
     <p class="pequeno">Lançamentos de extrato por mês (em vermelho, quantos ainda estão sem classificação "???").</p>
     <div class="rolagem"><table class="grade"><thead><tr><th>Pessoa</th>${MESES.map((m) => `<th>${m}</th>`).join('')}</tr></thead><tbody>`;
   for (const p of pessoas) {
@@ -90,7 +97,8 @@ VIEWS.inicio = async () => {
     html += '</tr>';
   }
   html += '</tbody></table></div></section>';
-  if (SEC()) {
+  }
+  if (VE_RELATORIOS()) {
     const [vales, bancos, just, meses] = await Promise.all([dados('vales'), dados('bancos'), dados('justificar'), dados('meses')]);
     const snaps = Object.fromEntries(meses.filter((m) => m.fechado).map((m) => [m.mes, m]));
     html += `<section class="card"><h2>Conferência (diferença da aba 2, célula N1)</h2><div class="rolagem"><table class="grade"><thead><tr><th></th>${MESES.map((m) => `<th>${m}</th>`).join('')}</tr></thead><tbody><tr><th>Diferença</th>`;
@@ -351,7 +359,9 @@ function tabelaVales(lst) {
 }
 
 async function contexto() {
-  const [lanc, vales, bancos, just, saldos, meses] = await Promise.all(['lancamentos', 'vales', 'bancos', 'justificar', 'saldos', 'meses'].map((c) => dados(c)));
+  const cols = SEC() ? ['lancamentos', 'vales', 'bancos', 'justificar', 'saldos', 'meses'] : ['vales', 'bancos', 'justificar', 'meses'];
+  const r = Object.fromEntries(await Promise.all(cols.map(async (c) => [c, await dados(c)])));
+  const [lanc, vales, bancos, just, saldos, meses] = ['lancamentos', 'vales', 'bancos', 'justificar', 'saldos', 'meses'].map((c) => r[c] || []);
   return { lanc, vales, bancos, just, saldos, meses, snaps: Object.fromEntries(meses.filter((m) => m.fechado).map((m) => [m.mes, m])) };
 }
 
@@ -550,13 +560,15 @@ VIEWS.config = async () => {
     <label>Nome da casa <input id="cf-casa" value="${esc(cfg.casa || 'CCBV')}" size="8"></label></div>
     <button id="cf-salvar">Salvar configuração</button></section>
   <section class="card"><h2>Usuários</h2><datalist id="siglas">${cfg.pessoas.map((p) => `<option value="${esc(p.sigla)}">${esc(p.nome)}</option>`).join('')}</datalist>
+    <p class="pequeno">Perfis: <strong>cl</strong> = acesso total (secretaria); <strong>residente</strong> = envia e classifica os
+      próprios extratos (precisa de sigla); <strong>cr</strong> = só vê relatórios e a conferência, sem alterar nada (sigla opcional).</p>
     <table class="lanc"><thead><tr><th>E-mail</th><th>Sigla</th><th>Perfil</th><th></th></tr></thead><tbody id="us-lista">
     ${usuarios.map((u) => `<tr data-uid="${esc(u.uid)}"><td>${esc(u.email)}</td><td><input data-u="sigla" value="${esc(u.sigla || '')}" size="5" list="siglas"></td>
-      <td><select data-u="perfil">${opcoes([['residente', 'residente'], ['secretaria', 'secretaria']], u.perfil)}</select></td>
+      <td><select data-u="perfil">${opcoes(PERFIS, u.perfil)}</select></td>
       <td><button class="mini" data-salvaru="${esc(u.uid)}">Salvar</button> <button class="mini sec" data-convite="${esc(u.uid)}">Convite</button></td></tr>`).join('')}</tbody></table>
     <div id="us-convite"></div>
     <details><summary>Criar login</summary><div class="linha"><input id="us-email" placeholder="e-mail"><input id="us-senha" placeholder="senha provisória (opcional)">
-      <input id="us-sigla" placeholder="sigla (ex.: RV)" size="8" list="siglas"><select id="us-perfil">${opcoes([['residente', 'residente'], ['secretaria', 'secretaria']])}</select>
+      <input id="us-sigla" placeholder="sigla (residente)" size="10" list="siglas"><select id="us-perfil">${opcoes(PERFIS, 'residente')}</select>
       <button id="us-ok">Criar</button></div><p class="pequeno">Sem senha provisória, o Firebase envia à pessoa um e-mail para ela
       definir a própria senha. Com senha provisória, ela troca a senha no primeiro acesso. Em seguida aparece a mensagem de convite.</p></details></section>
   <section class="card"><h2>Cópia de segurança</h2><div class="linha"><button id="cf-backup" class="sec">Baixar cópia (JSON)</button>
@@ -590,15 +602,17 @@ VIEWS.config = async () => {
     if (uid) tentar(async () => {
       const tr = e.target.closest('tr');
       const sigla = $('[data-u=sigla]', tr).value.trim().toUpperCase();
-      if (!sigla) throw new Error('Informe a sigla.');
-      await api.auth.salvarUsuario(uid, { sigla, perfil: $('[data-u=perfil]', tr).value });
+      const perfil = $('[data-u=perfil]', tr).value;
+      if (!sigla && perfil === 'residente') throw new Error('Residente precisa de sigla.');
+      if (uid === sessao.uid && perfil !== 'secretaria' && !confirm('Você está tirando o seu próprio acesso total (cl). Continuar?')) return;
+      await api.auth.salvarUsuario(uid, { sigla, perfil });
       toast('Usuário atualizado.');
     });
   };
   $('#us-ok').onclick = () => tentar(async () => {
     const sigla = $('#us-sigla').value.trim().toUpperCase();
-    if (!sigla) throw new Error('Informe a sigla da pessoa.');
     const email = $('#us-email').value.trim(), senha = $('#us-senha').value, perfil = $('#us-perfil').value;
+    if (!sigla && perfil === 'residente') throw new Error('Informe a sigla do residente.');
     await api.auth.criarUsuario({ email, senha, sigla, perfil });
     toast('Login criado.');
     await rotear();
@@ -625,7 +639,10 @@ const URL_PUBLICA = 'https://lab-soft.github.io/FinCon/';
 function textoConvite({ email, sigla, perfil, comSenha }) {
   const nome = cfg.pessoas.find((p) => p.sigla === sigla)?.nome || '';
   const primeiro = nome.split(' ')[0];
-  const passos = perfil === 'secretaria'
+  const passos = perfil === 'cr'
+    ? '3. Em "Relatórios" você vê e imprime os relatórios do mês (Caixa B e C frente e verso, folhas pessoais, livro caixa '
+      + 'e vale eletrônico); em "Início", a conferência de cada mês. Seu acesso é só de consulta.'
+    : perfil === 'secretaria'
     ? '3. Pelo menu você acessa os extratos de todos, gera os vales do mês, controla bancos e itens a justificar e '
       + 'imprime os relatórios (Caixa B e C, folhas pessoais, livro caixa e vale eletrônico).'
     : '3. Em "Meus extratos", escolha a sua conta e envie os extratos do mês: PDF ou planilha exportada do Itaú, CSV do '
@@ -639,7 +656,7 @@ function textoConvite({ email, sigla, perfil, comSenha }) {
 Seu acesso ao FinCon, o aplicativo de controle financeiro da CCBV, foi criado.
 
 E-mail de acesso: ${email}
-Sigla: ${sigla}${perfil === 'secretaria' ? ' (perfil: secretaria)' : ''}
+${sigla ? `Sigla: ${sigla}\n` : ''}Perfil: ${rotuloPerfil(perfil)}
 
 Como começar:
 1. ${comSenha
@@ -711,8 +728,8 @@ async function importarPlanilhaSecretaria(f, etapa = () => {}) {
 
 // ------------------------------------------------------------------ conta
 VIEWS.conta = async () => {
-  main().innerHTML = `<section class="card"><h2>Conta</h2><p>${esc(sessao.email)} · ${esc(sessao.sigla)} · ${esc(sessao.perfil)}</p>
-    ${api.demo ? `<p class="pequeno">Demonstração: ver o app como <select id="ct-sim">${opcoes([['secretaria|SEC', 'secretaria'], ...cfg.pessoas.map((p) => [`residente|${p.sigla}`, `residente ${p.sigla}`])], `${sessao.perfil}|${sessao.sigla}`)}</select></p>` : `
+  main().innerHTML = `<section class="card"><h2>Conta</h2><p>${esc(sessao.email)}${sessao.sigla ? ' · ' + esc(sessao.sigla) : ''} · ${esc(rotuloPerfil(sessao.perfil))}</p>
+    ${api.demo ? `<p class="pequeno">Demonstração: ver o app como <select id="ct-sim">${opcoes([['secretaria|SEC', 'cl (acesso total)'], ['cr|', 'cr (só relatórios)'], ...cfg.pessoas.map((p) => [`residente|${p.sigla}`, `residente ${p.sigla}`])], `${sessao.perfil}|${sessao.sigla}`)}</select></p>` : `
     <div class="linha"><input type="password" id="ct-nova" placeholder="nova senha"><button id="ct-trocar">Trocar senha</button></div>`}
     <button id="ct-sair" class="sec">Sair</button></section>`;
   $('#ct-sair').onclick = () => api.auth.sair();

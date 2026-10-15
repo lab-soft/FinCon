@@ -1,7 +1,11 @@
 rules_version = '2';
 // FinCon — regras do Firestore. Copie para o console do Firebase (Firestore → Regras) sempre que mudar.
-// secretaria: lê e grava tudo. residente: lê a configuração e grava/lê só os próprios lançamentos e saldos
-// (campo sigla igual ao do seu usuário); lê os próprios vales.
+// Perfis (campo users/{uid}.perfil):
+//   "secretaria" (na tela: cl) — lê e grava tudo;
+//   "residente" — lê a configuração e grava/lê só os próprios lançamentos e saldos (campo sigla igual ao do seu
+//                 usuário); lê os próprios vales;
+//   "cr" — só consulta: lê configuração, vales, bancos, itens a justificar e fechamentos (o que os relatórios usam);
+//          não lê lançamentos nem saldos de extrato e não grava nada.
 service cloud.firestore {
   match /databases/{database}/documents {
     function logado() { return request.auth != null; }
@@ -9,6 +13,8 @@ service cloud.firestore {
     function temPerfil() { return logado() && exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
     function secretaria() { return temPerfil() && eu().perfil == 'secretaria'; }
     function minhaSigla() { return eu().sigla; }
+    function consulta() { return temPerfil() && eu().perfil == 'cr'; }
+    function residente() { return temPerfil() && eu().perfil == 'residente' && eu().sigla != ''; }
 
     match /settings/bootstrap {
       allow read: if logado();
@@ -28,22 +34,23 @@ service cloud.firestore {
       allow write: if secretaria();
     }
     match /lancamentos/{id} {
-      allow read: if secretaria() || (temPerfil() && resource.data.sigla == minhaSigla());
-      allow create: if secretaria() || (temPerfil() && request.resource.data.sigla == minhaSigla());
-      allow update: if secretaria() || (temPerfil() && resource.data.sigla == minhaSigla()
+      allow read: if secretaria() || (residente() && resource.data.sigla == minhaSigla());
+      allow create: if secretaria() || (residente() && request.resource.data.sigla == minhaSigla());
+      allow update: if secretaria() || (residente() && resource.data.sigla == minhaSigla()
                       && request.resource.data.sigla == minhaSigla());
-      allow delete: if secretaria() || (temPerfil() && resource.data.sigla == minhaSigla());
+      allow delete: if secretaria() || (residente() && resource.data.sigla == minhaSigla());
     }
     match /saldos/{id} {
-      allow read: if secretaria() || (temPerfil() && resource.data.sigla == minhaSigla());
-      allow write: if secretaria() || (temPerfil() && request.resource.data.sigla == minhaSigla());
+      allow read: if secretaria() || (residente() && resource.data.sigla == minhaSigla());
+      allow write: if secretaria() || (residente() && request.resource.data.sigla == minhaSigla());
     }
     match /vales/{id} {
-      allow read: if secretaria() || (temPerfil() && resource.data.sigla == minhaSigla());
+      allow read: if secretaria() || consulta() || (residente() && resource.data.sigla == minhaSigla());
       allow write: if secretaria();
     }
     match /{col}/{id} {
-      allow read, write: if secretaria() && col in ['justificar', 'bancos', 'meses'];
+      allow read: if (secretaria() || consulta()) && col in ['justificar', 'bancos', 'meses'];
+      allow write: if secretaria() && col in ['justificar', 'bancos', 'meses'];
     }
   }
 }
