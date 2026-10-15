@@ -22,7 +22,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const main = () => $('#main');
 function toast(msg, erro = false) {
   const t = $('#toast'); t.textContent = msg; t.className = 'toast show' + (erro ? ' erro' : '');
-  clearTimeout(t._h); t._h = setTimeout(() => (t.className = 'toast'), 3500);
+  clearTimeout(t._h); t._h = setTimeout(() => (t.className = 'toast'), erro ? 10000 : 3500);
 }
 async function tentar(fn) { try { return await fn(); } catch (e) { console.error(e); toast(e.message || String(e), true); } }
 const opcoes = (lst, sel) => lst.map(([v, t]) => `<option value="${esc(v)}" ${String(v) === String(sel) ? 'selected' : ''}>${esc(t)}</option>`).join('');
@@ -533,7 +533,7 @@ VIEWS.config = async () => {
   <section class="card"><h2>Planilha da secretaria</h2>
     <p class="pequeno">Importa de uma "Secretaria Evolution.ANO.xlsx" as pessoas, os códigos (aba 1), o saldo inicial, os VALES já lançados (aba 2),
       JUSTIFICAR e fechamentos (aba 3), BANCOS (aba 4) e o orçamento (aba 6). Os dados desse ano no app são substituídos.</p>
-    <input type="file" id="cf-sec" accept=".xlsx"></section>
+    <input type="file" id="cf-sec" accept=".xlsx"><div id="cf-sec-status" class="pequeno"></div></section>
   <section class="card"><h2>Pessoas</h2><p class="pequeno">Moradores dividem o Caixa C (rateio PS/CO). "Até" = último mês (AAAA-MM) de quem saiu.</p>
     <table class="lanc"><thead><tr><th>Sigla</th><th>Nome</th><th>Morador</th><th>Desde</th><th>Até</th><th></th></tr></thead><tbody id="cf-pessoas">
     ${cfg.pessoas.map((p, i) => `<tr data-i="${i}"><td><input data-f="sigla" value="${esc(p.sigla)}" size="4"></td><td><input data-f="nome" value="${esc(p.nome)}"></td>
@@ -549,10 +549,13 @@ VIEWS.config = async () => {
     <label>Caixa B <input id="cf-sib" value="${si.B ?? 0}" size="12"></label><label>Caixa C <input id="cf-sic" value="${si.C ?? 0}" size="12"></label>
     <label>Nome da casa <input id="cf-casa" value="${esc(cfg.casa || 'CCBV')}" size="8"></label></div>
     <button id="cf-salvar">Salvar configuração</button></section>
-  <section class="card"><h2>Usuários</h2><table class="lanc"><thead><tr><th>E-mail</th><th>Sigla</th><th>Perfil</th></tr></thead><tbody>
-    ${usuarios.map((u) => `<tr><td>${esc(u.email)}</td><td>${esc(u.sigla)}</td><td>${esc(u.perfil)}</td></tr>`).join('')}</tbody></table>
+  <section class="card"><h2>Usuários</h2><datalist id="siglas">${cfg.pessoas.map((p) => `<option value="${esc(p.sigla)}">${esc(p.nome)}</option>`).join('')}</datalist>
+    <table class="lanc"><thead><tr><th>E-mail</th><th>Sigla</th><th>Perfil</th><th></th></tr></thead><tbody id="us-lista">
+    ${usuarios.map((u) => `<tr data-uid="${esc(u.uid)}"><td>${esc(u.email)}</td><td><input data-u="sigla" value="${esc(u.sigla || '')}" size="5" list="siglas"></td>
+      <td><select data-u="perfil">${opcoes([['residente', 'residente'], ['secretaria', 'secretaria']], u.perfil)}</select></td>
+      <td><button class="mini" data-salvaru="${esc(u.uid)}">Salvar</button></td></tr>`).join('')}</tbody></table>
     <details><summary>Criar login</summary><div class="linha"><input id="us-email" placeholder="e-mail"><input id="us-senha" placeholder="senha provisória">
-      <select id="us-sigla">${opcoes(cfg.pessoas.map((p) => [p.sigla, p.sigla]))}</select><select id="us-perfil">${opcoes([['residente', 'residente'], ['secretaria', 'secretaria']])}</select>
+      <input id="us-sigla" placeholder="sigla (ex.: RV)" size="8" list="siglas"><select id="us-perfil">${opcoes([['residente', 'residente'], ['secretaria', 'secretaria']])}</select>
       <button id="us-ok">Criar</button></div><p class="pequeno">A pessoa troca a senha no primeiro acesso.</p></details></section>
   <section class="card"><h2>Cópia de segurança</h2><div class="linha"><button id="cf-backup" class="sec">Baixar cópia (JSON)</button>
     <label>Restaurar <input type="file" id="cf-restaurar" accept=".json"></label>${api.demo ? '<button id="cf-zerar" class="perigo">Apagar dados da demonstração</button>' : ''}</div></section>`;
@@ -573,12 +576,26 @@ VIEWS.config = async () => {
   main().onclick = (e) => {
     if (e.target.dataset.delp) tentar(async () => { cfg.pessoas.splice(Number(e.target.dataset.delp), 1); await api.salvarConfig(cfg); rotear(); });
     if (e.target.dataset.delc) tentar(async () => { cfg.contas.splice(Number(e.target.dataset.delc), 1); await api.salvarConfig(cfg); rotear(); });
+    const uid = e.target.dataset.salvaru;
+    if (uid) tentar(async () => {
+      const tr = e.target.closest('tr');
+      const sigla = $('[data-u=sigla]', tr).value.trim().toUpperCase();
+      if (!sigla) throw new Error('Informe a sigla.');
+      await api.auth.salvarUsuario(uid, { sigla, perfil: $('[data-u=perfil]', tr).value });
+      toast('Usuário atualizado.');
+    });
   };
   $('#us-ok').onclick = () => tentar(async () => {
-    await api.auth.criarUsuario({ email: $('#us-email').value.trim(), senha: $('#us-senha').value, sigla: $('#us-sigla').value, perfil: $('#us-perfil').value });
+    const sigla = $('#us-sigla').value.trim().toUpperCase();
+    if (!sigla) throw new Error('Informe a sigla da pessoa.');
+    await api.auth.criarUsuario({ email: $('#us-email').value.trim(), senha: $('#us-senha').value, sigla, perfil: $('#us-perfil').value });
     toast('Login criado.'); rotear();
   });
-  $('#cf-sec').onchange = (e) => tentar(() => importarPlanilhaSecretaria(e.target.files[0]));
+  $('#cf-sec').onchange = async (e) => {
+    const etapa = (txt, erro = false) => { const el = $('#cf-sec-status'); if (el) { el.textContent = txt; el.className = erro ? 'erro' : 'pequeno'; } };
+    try { await importarPlanilhaSecretaria(e.target.files[0], etapa); }
+    catch (err) { console.error(err); etapa('Erro na importação: ' + (err.code ? err.code + ' — ' : '') + (err.message || err), true); }
+  };
   $('#cf-backup').onclick = () => tentar(async () => {
     const blob = new Blob([JSON.stringify(await api.exportar())], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `fincon-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click();
@@ -590,11 +607,15 @@ VIEWS.config = async () => {
   $('#cf-zerar') && ($('#cf-zerar').onclick = () => confirm('Apagar todos os dados da demonstração?') && api.zerar());
 };
 
-async function importarPlanilhaSecretaria(f) {
+async function importarPlanilhaSecretaria(f, etapa = () => {}) {
+  etapa('Carregando o leitor de planilhas…');
   const XLSX = await xlsx();
+  etapa(`Lendo ${f.name}…`);
   const r = importarSecretaria(XLSX, XLSX.read(await f.arrayBuffer(), { cellDates: true }));
+  etapa(`Planilha lida: ${r.vales.length} vales. Aguardando confirmação…`);
   if (!confirm(`Importar ${f.name}: ano ${r.ano}, ${r.config.pessoas.length} pessoas, ${r.vales.length} vales, ${r.justificar.length} itens a justificar, ${r.bancos.length} movimentos de banco, ${r.meses.length} meses fechados?\nOs vales, bancos, itens a justificar e fechamentos de ${r.ano} no app serão substituídos.`)) return;
   const antigos = {};
+  etapa(`Apagando os dados antigos de ${r.ano}…`);
   for (const col of ['vales', 'bancos', 'justificar', 'meses']) antigos[col] = (await api.listar(col, { ano: r.ano })).map((d) => d.id);
   for (const [col, ids] of Object.entries(antigos)) await api.apagarVarios(col, ids);
   // as pessoas/contas/códigos novos se juntam aos que já existem
@@ -607,11 +628,16 @@ async function importarPlanilhaSecretaria(f) {
   for (const c of r.config.contas) contas.set(c.id, { ...c, ...(contas.get(c.id) || {}) });
   cfg = { ...cfg, casa: r.config.casa, codigos: r.config.codigos, pessoas: [...pessoas.values()], contas: [...contas.values()],
     saldoInicial: { ...(cfg.saldoInicial || {}), ...r.config.saldoInicial }, orcamento: { ...(cfg.orcamento || {}), ...r.config.orcamento } };
+  etapa('Gravando pessoas, contas e códigos…');
   await api.salvarConfig(cfg);
+  etapa(`Gravando ${r.vales.length} vales…`);
   await api.salvarVarios('vales', r.vales);
+  etapa(`Gravando ${r.bancos.length} movimentos de banco…`);
   await api.salvarVarios('bancos', r.bancos);
+  etapa(`Gravando ${r.justificar.length} itens a justificar e ${r.meses.length} fechamentos…`);
   await api.salvarVarios('justificar', r.justificar.map((j) => ({ ...j, ano: j.ano || r.ano })));
   await api.salvarVarios('meses', r.meses);
+  etapa('Importação concluída.');
   st.ano = r.ano; localStorage.setItem('fincon-ano', r.ano);
   st.cache = {};
   toast('Planilha importada.'); location.hash = '#/inicio'; rotear();

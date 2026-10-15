@@ -80,24 +80,28 @@ export function createFirebaseApi(config) {
     },
     async salvarVarios(col, objs) {
       const ids = [];
-      for (let i = 0; i < objs.length; i += 400) {
+      const lotes = [];
+      for (let i = 0; i < objs.length; i += LOTE) {
         const b = writeBatch(db);
-        for (const o of objs.slice(i, i + 400)) {
+        for (const o of objs.slice(i, i + LOTE)) {
           const { id, ...dados } = o;
           const ref = id ? doc(db, col, id) : doc(collection(db, col));
           b.set(ref, limpar(dados));
           ids.push(ref.id);
         }
-        await b.commit();
+        lotes.push(b);
       }
+      await emParalelo(lotes.map((b) => () => b.commit()));
       return ids;
     },
     async apagarVarios(col, ids) {
-      for (let i = 0; i < ids.length; i += 400) {
+      const lotes = [];
+      for (let i = 0; i < ids.length; i += LOTE) {
         const b = writeBatch(db);
-        for (const id of ids.slice(i, i + 400)) b.delete(doc(db, col, id));
-        await b.commit();
+        for (const id of ids.slice(i, i + LOTE)) b.delete(doc(db, col, id));
+        lotes.push(b);
       }
+      await emParalelo(lotes.map((b) => () => b.commit()));
     },
     async exportar() {
       const res = {};
@@ -118,3 +122,10 @@ export function createFirebaseApi(config) {
 
 // o Firestore não aceita undefined
 function limpar(o) { return JSON.parse(JSON.stringify(o)); }
+
+// Lotes pequenos: as regras consultam o perfil (users/uid) a cada documento gravado, e o Firestore limita as
+// consultas das regras por requisição (20 em gravações em lote). 9 documentos por lote, 8 lotes ao mesmo tempo.
+const LOTE = 9;
+async function emParalelo(tarefas, n = 8) {
+  for (let i = 0; i < tarefas.length; i += n) await Promise.all(tarefas.slice(i, i + n).map((t) => t()));
+}
