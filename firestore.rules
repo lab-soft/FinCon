@@ -1,0 +1,49 @@
+rules_version = '2';
+// FinCon — regras do Firestore. Copie para o console do Firebase (Firestore → Regras) sempre que mudar.
+// secretaria: lê e grava tudo. residente: lê a configuração e grava/lê só os próprios lançamentos e saldos
+// (campo sigla igual ao do seu usuário); lê os próprios vales.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function logado() { return request.auth != null; }
+    function eu() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function temPerfil() { return logado() && exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function secretaria() { return temPerfil() && eu().perfil == 'secretaria'; }
+    function minhaSigla() { return eu().sigla; }
+
+    match /settings/bootstrap {
+      allow read: if logado();
+      allow create: if logado();                 // só funciona uma vez (transação no app)
+    }
+    match /users/{uid} {
+      allow read: if logado() && (request.auth.uid == uid || secretaria());
+      allow create: if secretaria() || (logado() && request.auth.uid == uid
+                      && !exists(/databases/$(database)/documents/settings/bootstrap)
+                      && request.resource.data.perfil == 'secretaria');
+      allow update: if secretaria() || (logado() && request.auth.uid == uid
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['mustChange']));
+      allow delete: if secretaria();
+    }
+    match /config/{id} {
+      allow read: if temPerfil();
+      allow write: if secretaria();
+    }
+    match /lancamentos/{id} {
+      allow read: if secretaria() || (temPerfil() && resource.data.sigla == minhaSigla());
+      allow create: if secretaria() || (temPerfil() && request.resource.data.sigla == minhaSigla());
+      allow update: if secretaria() || (temPerfil() && resource.data.sigla == minhaSigla()
+                      && request.resource.data.sigla == minhaSigla());
+      allow delete: if secretaria() || (temPerfil() && resource.data.sigla == minhaSigla());
+    }
+    match /saldos/{id} {
+      allow read: if secretaria() || (temPerfil() && resource.data.sigla == minhaSigla());
+      allow write: if secretaria() || (temPerfil() && request.resource.data.sigla == minhaSigla());
+    }
+    match /vales/{id} {
+      allow read: if secretaria() || (temPerfil() && resource.data.sigla == minhaSigla());
+      allow write: if secretaria();
+    }
+    match /{col}/{id} {
+      allow read, write: if secretaria() && col in ['justificar', 'bancos', 'meses'];
+    }
+  }
+}

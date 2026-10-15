@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><title>FinCon — testes</title>
+<style>body{font-family:system-ui;margin:20px}.ok{color:#1b7a3d}.erro{color:#b3261e}</style></head>
+<body><h1>FinCon — testes da lógica</h1><ul id="saida"></ul><p id="resumo"></p>
+<script type="module">
+  const { testes } = await import('./logic.test.mjs');
+  let ok = 0;
+  for (const { nome, fn } of testes) {
+    const li = document.createElement('li');
+    try { await fn(); li.className = 'ok'; li.textContent = '✓ ' + nome; ok++; }
+    catch (e) { li.className = 'erro'; li.textContent = '✗ ' + nome + ' — ' + e.message; console.error(e); }
+    document.getElementById('saida').append(li);
+  }
+  const r = document.getElementById('resumo');
+  r.textContent = `${ok}/${testes.length} testes passaram`; r.className = ok === testes.length ? 'ok' : 'erro';
+  window.resultadoTestes = { ok, total: testes.length };
+</script></body></html>
